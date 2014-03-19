@@ -1,0 +1,33 @@
+This was in the original Makefile to find the software version number as a
+proof of concept.  It wasn't converted to work with the automake setup in
+ias_lib.  Instead, it needs to be converted into a perl script that generates
+an updated local .h file with the version info.
+
+#----------------------------------------------------------------------------
+# Set up the release version
+#----------------------------------------------------------------------------
+# If svnversion contains an M it has been modified
+SVNVER := $(shell svnversion -n .)
+# SVN STATUS tells us if the file has been modified or not
+STATUS := "$(shell svn status -N . 2> /dev/null)"
+# SVN INFO will give us the URL (including release tag)
+SVNINFO := "$(shell svn info . 2>/dev/null |grep URL)"
+#SVNINFO := "URL: svn://localhost/trunk/release_1.0.1/libs/ipe_common"
+REL := $(shell echo ${SVNINFO} | perl -n -e '/\/release_(.+?)\//; print $$1;')
+
+VERSION := "SVN ${SVNVER}"
+ifneq ("${REL}","")
+	VERSION := ${REL}
+endif
+ifeq (M, $(findstring M, ${SVNVER}))
+	VERSION := "SVN ${SVNVER} with ${USER} changes"
+endif
+
+
+info:
+	@echo "subversion version is ${SVNVER}"
+	@echo "user is ${USER}"
+	@echo "subversion URL is ${SVNINFO}"
+	@echo "release is ${REL}"
+	@echo "version is ${VERSION}"
+

@@ -1,0 +1,263 @@
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT(iaslib,[m4_esyscmd([./get_version.pl -n])])
+AM_INIT_AUTOMAKE
+AC_DEFINE([IAS_VERSION],[m4_esyscmd([./get_version.pl -q -n])],
+    [IAS_VERSION is referenced in ias_misc_get_software_version.c])
+AM_CONFIG_HEADER(config.h)
+AC_CANONICAL_HOST
+
+# set the default prefix based on the environment instead of forcing people to
+# override it every time they run configure
+AC_PREFIX_DEFAULT(${IASLIB_BASE})
+
+# Set COTS library and include paths.
+# -----------------------------------
+
+# ODL library
+ODL_INCLUDES="-I${ODL_HOME}"
+ODL_LIBS="-L${ODL_HOME} -llab3"
+AC_SUBST(ODL_INCLUDES)
+AC_SUBST(ODL_LIBS)
+
+# HDF4 library (should be able to remove eventually)
+HDF_INCLUDES="-I${HDF_HOME}/include"
+HDF_LIBS="-L${HDF_HOME}/lib -lmfhdf -ldf -ljpeg -lz -lm"
+AC_SUBST(HDF_INCLUDES)
+AC_SUBST(HDF_LIBS)
+
+# HDF5 library
+HDF5_INCLUDES="-I${HDF5INC}"
+HDF5_LIBS="-L${HDF5LIB} -lhdf5_hl -lhdf5"
+AC_SUBST(HDF5_INCLUDES)
+AC_SUBST(HDF5_LIBS)
+
+# GSL library
+GSL_INCLUDES="-I${GSLINC}"
+GSL_LIBS="-L${GSLLIB} -lgsl -lgslcblas"
+AC_SUBST(GSL_INCLUDES)
+AC_SUBST(GSL_LIBS)
+
+# GCTP library
+GCTP_INCLUDES="-I${GCTPINC}"
+GCTP_LIBS="-L${GCTPLIB}  -lgctp3"
+AC_SUBST(GCTP_INCLUDES)
+AC_SUBST(GCTP_LIBS)
+
+# NOVAS library
+NOVAS_INCLUDES="-I${NOVASINC}"
+NOVAS_LIBS="-L${NOVASLIB} -lnovas"
+AC_SUBST(NOVAS_INCLUDES)
+AC_SUBST(NOVAS_LIBS)
+
+# REMEZ library
+REMEZ_INCLUDES="-I${REMEZINC}"
+REMEZ_LIBS="-L${REMEZLIB} -lremez"
+AC_SUBST(REMEZ_INCLUDES)
+AC_SUBST(REMEZ_LIBS)
+
+
+# check whether there is a system build of ODBC.  If there isn't, we'll want to
+# override it to use our own COTS build.  This is done to allow us to build the
+# code on Solaris boxes with our own unixodbc install.
+AC_CHECK_HEADER(sql.h,
+    [
+        ODBC_INCLUDES=""
+        ODBC_LIBS="-lodbc"
+    ],
+    [
+        ODBC_INCLUDES="-I${ODBC_INC}"
+        ODBC_LIBS="-L${ODBC_LIB} -lodbc"
+    ])
+
+# Combined COTS include
+COTS_INCLUDES="${ODL_INCLUDES} ${HDF_INCLUDES} ${GSL_INCLUDES}"
+AC_SUBST(COTS_INCLUDES)
+
+# set the IAS includes and libraries
+# ------------------------------
+IAS_INCLUDES="-I${includedir}"
+AC_SUBST(IAS_INCLUDES)
+#
+IAS_LIB="${libdir}/libias.a"
+AC_SUBST(IAS_LIB)
+
+# set up the database library and includes
+IAS_DB_INCLUDES="${ODBC_INCLUDES}"
+IAS_DB_LIBS="-L${libdir} -lias ${ODBC_LIBS}"
+AC_SUBST(IAS_DB_INCLUDES)
+AC_SUBST(IAS_DB_LIBS)
+
+IASLIB_PERLLIB="${IASLIB_PERLLIB}"
+AC_SUBST(IASLIB_PERLLIB)
+
+# Check for basic programs needed to configure and build the system.
+# ------------------------------------------------------------------
+
+AC_PROG_CXX
+AC_PROG_CC
+AC_PROG_CPP
+AC_PROG_LN_S
+AM_PROG_LIBTOOL
+
+# force the INSTALL_DATA command (used for .h files) to preserve the date to
+# prevent redundant compiling of .c files.  Note that this should probably
+# use a check of some sort to make sure the install application supports the
+# -p option, but we'll worry about that later.
+INSTALL_DATA="${INSTALL_DATA} -p"
+
+# Set up the CGREEN test framework library
+# ------------------------------------------------------------------
+CGREEN_INCLUDES="-I${CGREENINC}"
+CGREEN_LIBS="-L${CGREENLIB} -lcgreen -lm"
+AC_SUBST(CGREEN_INCLUDES)
+AC_SUBST(CGREEN_LIBS)
+
+# check whether the posix4 library is present.  If it is, we're probably on
+# solaris and need to include it.
+AC_CHECK_LIB(posix4, sem_init, 
+    [ POSIX4="-lposix4" ], [ POSIX4="" ],)
+
+# check whether pthreads are available
+AC_CHECK_LIB(pthread, pthread_create, 
+    [ PTHREAD="-lpthread" ], [ PTHREAD="" ],)
+
+# enable/disable multithreaded support in the build.  Enabled is the default.
+# ------------------------------------------------------------------
+AC_ARG_ENABLE( multithread, [  --enable-multithread    turn on multithreaded correlator [default=yes]],
+[if eval "test x$enable_multithread != xno"; then
+    THREAD_LIBS="${PTHREAD} ${POSIX4}"
+fi],
+[THREAD_LIBS="${PTHREAD} ${POSIX4}"]
+)
+AC_SUBST(THREAD_LIBS)
+
+# Check for basic system utilities that are invoked by some of the processing
+# software. These should almost always be in /bin on on any normal system, but
+# check to be sure.
+# --------------------------------------------------------------------
+
+AC_PATH_PROG( CP_COMMAND, cp )
+AC_PATH_PROG( DF_COMMAND, df )
+AC_PATH_PROG( LS_COMMAND, ls )
+AC_PATH_PROG( PS_COMMAND, ps )
+AC_PATH_PROG( RM_COMMAND, rm )
+
+
+# Check for system headers.
+# -------------------------
+
+AC_CHECK_HEADER(sys/sched.h,
+    AC_DEFINE(HAVE_SYS_SCHED_H, 1,
+	      [Define this if you need <sys/sched.h> for POSIX thread types.])
+)
+
+# Check system byte order
+#------------------------
+AC_C_BIGENDIAN(,
+    AC_DEFINE(HAVE_LITTLE_ENDIAN, 1,
+        [Define this on little endian systems.]),
+)
+
+dnl Checks for declarations.
+dnl AC_CHECK_DECL( MAXNAMELEN, AC_DEFINE(HAVE_DECL_MAXNAMELEN, 1, [Define this if MAXNAMELEN is declared in <sys/param.h>.]), , includes=<sys/param.h>) 
+
+dnl Checks for needed libraries.
+
+# Check for non-standard functions
+# --------------------------------
+AC_CHECK_FUNC(fmemopen, AC_DEFINE(HAVE_FMEMOPEN, 1,
+                [Defined if system has fmemopen routine]))
+
+dnl Sets up some build variables.
+TOPLEVEL=`pwd`
+AC_SUBST(TOPLEVEL)
+
+# Add an argument to be able to disable all Qt applications
+# ---------------------------------------------------------
+AC_ARG_WITH([qt],
+    AS_HELP_STRING([--without-qt], [Do not build Qt applications]))
+
+# Note ias_qt_lib has its own package, so it is
+# listed here rather than in AC_OUTPUT below.
+
+# Add an argument to be able to disable ias_qt_lib
+# ------------------------------------------------
+AC_ARG_ENABLE([ias_qt_lib], 
+    AS_HELP_STRING([--enable-ias_qt_lib],
+                   [build the ias_qt_lib package [[default=yes]]]))
+
+AS_IF([test "x$with_qt" != xno],
+[
+    AS_IF([test "x$enable_ias_qt_lib" != xno],
+        [AC_CONFIG_SUBDIRS([ias_qt_lib])
+         IAS_QT_LIB_DIR=ias_qt_lib])
+])
+
+AC_SUBST(IAS_QT_LIB_DIR)
+
+# Define the Makefiles that need to be created.  Please keep the list in
+# alphabetical order.
+# ----------------------------------------------------------------------
+
+AC_OUTPUT( 
+Makefile
+ancillary/Makefile
+ancillary/tests/Makefile
+grid/Makefile
+grid/tests/Makefile
+io/ancillary_io/Makefile
+io/ancillary_io/tests/Makefile
+io/bpf_database/Makefile
+io/bpf_database/tests/Makefile
+io/bpf_file/Makefile
+io/bpf_file/tests/Makefile
+io/cpf_file/Makefile
+io/cpf_file/tests/Makefile
+io/gcp/Makefile
+io/gcp/tests/Makefile
+io/geometric_grid/Makefile
+io/geometric_grid/tests/Makefile
+io/grid/Makefile
+io/grid/tests/Makefile
+io/Makefile
+io/L0R/Makefile
+io/L0R/tests/Makefile
+io/L1R/Makefile
+io/L1R/tests/Makefile
+io/L1G/Makefile
+io/L1G/tests/Makefile
+io/model/Makefile
+io/model/tests/Makefile
+io/parameter_file_io/Makefile
+io/parameter_file_io/tests/Makefile
+io/rlut/Makefile
+io/rlut/tests/Makefile
+los_model/Makefile
+los_model/tests/Makefile
+los_model/sensor/Makefile
+los_model/sensor/tests/Makefile
+los_model/spacecraft/Makefile
+los_model/spacecraft/tests/Makefile
+misc/database_access/Makefile
+misc/database_access/tests/Makefile
+misc/geo/Makefile
+misc/geo/tests/Makefile
+misc/Makefile
+misc/math/Makefile
+misc/math/tests/Makefile
+misc/miscellaneous/Makefile
+misc/miscellaneous/tests/Makefile
+misc/odl/Makefile
+misc/odl/tests/Makefile
+misc/pixel_mask/Makefile
+misc/pixel_mask/tests/Makefile
+misc/satellite_attributes/Makefile
+misc/satellite_attributes/tests/Makefile
+misc/tests/Makefile
+misc/threading/Makefile
+misc/threading/tests/Makefile
+perllib/Makefile
+rps/Makefile
+rps/tests/Makefile
+setup/Makefile
+)

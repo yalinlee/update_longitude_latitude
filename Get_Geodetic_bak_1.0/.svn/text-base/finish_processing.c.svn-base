@@ -1,0 +1,382 @@
+/******************************************************************************
+NAME:              finish_processing
+
+PURPOSE:  Update the model file and write to the solution and residual files.
+
+ALGORITHM REFERENCES:
+
+*******************************************************************************
+                        Property of the U.S. Government
+                             USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_types.h"
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "ias_los_model.h"
+#include "ias_model_io.h"
+#include "ias_math.h"
+#include "database_structures.h"
+#include "correct_los_model.h"
+
+void print_debugging_information
+(
+    const GCP_SOLUTION *gcp_sol     /* Precision information structure */
+);
+
+int finish_processing
+(
+    const char *model_filename,     /* I: Systematic OLI model file name */
+    const char *prec_model_filename,/* I: Precision corrected OLI model file */
+    const char *solution_filename,  /* I: Precision solution file name */
+    const char *l1g_image_name,     /* I: L1G mensuration image file name */
+    const IAS_LOS_MODEL *model,     /* I: Model */
+    const PRECISION_CORRECTIONS *precision_corr,
+                                    /* I: Precision corrections */
+    const double *ref_time,         /* I: Reference time 0:year 1:day 2:sec */
+    ALIGNMENT_CHAR_DATA *align_stats/* I/O: Alignment characterization info */
+)
+{
+    IAS_LOS_MODEL *precision_model;
+    IAS_SC_PRECISION_MODEL *model_precision_params;
+    IAS_VECTOR corrected_satpos;    /* Precision satellite position */
+    IAS_VECTOR corrected_satvel;    /* Precision satellite velocity */
+    IAS_VECTOR rpyangle;            /* Precision roll, pitch, yaw angle */
+    IAS_VECTOR rpyrate;             /* Precision roll, pitch, yaw rate */
+    GCP_SOLUTION gcp_sol;           /* Precision information structure for
+                                       solution file */
+    double att_time;
+    double roll;                    /* Roll at reference time */
+    double pitch;                   /* Pitch at reference time */
+    double yaw;                     /* Yaw at reference time */
+    double new_time;                /* New precision reference time relative to
+                                       image start */
+    int i, j;                       /* Loop control variables */
+    int status;
+
+    corrected_satpos = precision_corr->satpos;
+    corrected_satvel = precision_corr->satvel;
+
+    /* Convert to micro-radians */
+    rpyangle.x = precision_corr->rpyangle.x * 1.0e-6;
+    rpyangle.y = precision_corr->rpyangle.y * 1.0e-6;
+    rpyangle.z = precision_corr->rpyangle.z * 1.0e-6;
+    rpyrate.x = precision_corr->rpyrate.x * 1.0e-6;
+    rpyrate.y = precision_corr->rpyrate.y * 1.0e-6;
+    rpyrate.z = precision_corr->rpyrate.z * 1.0e-6;
+
+    /* Get a fresh copy of the model */
+    precision_model = ias_model_read(get_syst_model_filename());
+    if (!precision_model)
+    {
+        IAS_LOG_ERROR("Retrieving a fresh copy of systematic model");
+        return ERROR;
+    }
+
+    /* Get a convenience pointer to the model */
+    model_precision_params = &precision_model->spacecraft.precision;
+
+    status = ias_math_get_time_difference(ref_time,
+        model->spacecraft.attitude.utc_epoch_time, &att_time);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating the time difference between the reference "
+            "time and attitude epoch");
+        return ERROR;
+    }
+
+    status = ias_sc_model_find_attitude_at_time(&model->spacecraft.attitude,
+            att_time, &roll, &pitch, &yaw);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Finding the attitude at reference time %f", att_time);
+        return ERROR;
+    }
+
+    /* Update the precision values in the model structure */
+    status = ias_math_get_time_difference(ref_time,
+        model->sensor.bands[0].utc_epoch_time, &new_time);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating the time difference between the reference "
+            "time and image epoch");
+        return ERROR;
+    }
+
+    /* Precision ephemeris parameters */
+    model_precision_params->ephemeris_order = 2;
+
+    /* Position biases */
+    model_precision_params->x_corr[0] += corrected_satpos.x
+        + model_precision_params->x_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+    model_precision_params->y_corr[0] += corrected_satpos.y
+        + model_precision_params->y_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+    model_precision_params->z_corr[0] += corrected_satpos.z
+        + model_precision_params->z_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+
+    /* Rate biases */
+    model_precision_params->x_corr[1] += corrected_satvel.x;
+    model_precision_params->y_corr[1] += corrected_satvel.y;
+    model_precision_params->z_corr[1] += corrected_satvel.z;
+
+    /* Precision attitude parameters */
+    model_precision_params->attitude_order = 2;
+
+    /* Continue population by updating the roll, pitch and yaw angles and
+       rates */
+    model_precision_params->roll_corr[0] += rpyangle.x
+        + model_precision_params->roll_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+    model_precision_params->pitch_corr[0] += rpyangle.y
+        + model_precision_params->pitch_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+    model_precision_params->yaw_corr[0] += rpyangle.z
+        + model_precision_params->yaw_corr[1]
+        * (new_time - model_precision_params->seconds_from_image_epoch);
+
+    model_precision_params->roll_corr[1] += rpyrate.x;
+    model_precision_params->pitch_corr[1] += rpyrate.y;
+    model_precision_params->yaw_corr[1] += rpyrate.z;
+
+    model_precision_params->seconds_from_image_epoch = new_time;
+
+    /* DO NOT remove this, as it is relied upon for the automated
+       regression testing ------------------------------------------------- */
+    if (IAS_LOG_DEBUG_ENABLED())
+    {
+        printf("PRECISION_PARMS_TAG: position and rate biases: %.9e %.9e %.9e "
+                "%.9e %.9e %.9e\n",
+                model_precision_params->x_corr[0],
+                model_precision_params->y_corr[0],
+                model_precision_params->z_corr[0],
+                model_precision_params->x_corr[1],
+                model_precision_params->y_corr[1],
+                model_precision_params->z_corr[1]);
+
+        printf("PRECISION_PARMS_TAG: rpy angle & rate: %.9e %.9e %.9e "
+                "%.9e %.9e %.9e\n",
+                model_precision_params->roll_corr[0],
+                model_precision_params->pitch_corr[0],
+                model_precision_params->yaw_corr[0],
+                model_precision_params->roll_corr[1],
+                model_precision_params->pitch_corr[1],
+                model_precision_params->yaw_corr[1]);
+    }
+    /* DO NOT remove this, as it is relied upon for the automated
+       regression testing ------------------------------------------------- */
+
+    /* Update the model, since the precision parameters have been copied
+     * directly into the model above, the first argument isn't needed. */
+    status = ias_los_model_apply_precision_params(NULL, precision_model);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Applying precision parameters to the precision model");
+        ias_los_model_free(precision_model);
+        return ERROR;
+    }
+
+    /* Set the correction type to IAS_PRECISION */
+    precision_model->correction_type = IAS_PRECISION;
+
+    /* Write out the updated model */
+    status = ias_model_write(prec_model_filename, precision_model);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing precision model: %s", prec_model_filename);
+        ias_los_model_free(precision_model);
+        return ERROR;
+    }
+    ias_los_model_free(precision_model);
+    precision_model = NULL;
+
+    /* Write the solution file */
+    gcp_sol.p_satpos.x = corrected_satpos.x;
+    gcp_sol.p_satpos.y = corrected_satpos.y;
+    gcp_sol.p_satpos.z = corrected_satpos.z;
+    gcp_sol.p_satvel.x = corrected_satvel.x;
+    gcp_sol.p_satvel.y = corrected_satvel.y;
+    gcp_sol.p_satvel.z = corrected_satvel.z;
+    gcp_sol.p_rpyangle.x = precision_corr->rpyangle.x;
+    gcp_sol.p_rpyangle.y = precision_corr->rpyangle.y;
+    gcp_sol.p_rpyangle.z = precision_corr->rpyangle.z;
+    gcp_sol.p_rpyrate.x = precision_corr->rpyrate.x;
+    gcp_sol.p_rpyrate.y = precision_corr->rpyrate.y;
+    gcp_sol.p_rpyrate.z = precision_corr->rpyrate.z;
+
+    gcp_sol.p_year = ref_time[0];
+    gcp_sol.p_day = ref_time[1];
+    gcp_sol.p_second = ref_time[2];
+    gcp_sol.p_time = precision_corr->time;
+
+    /* Scale to microradians for output */
+    gcp_sol.p_refroll = roll * 1.0e6;
+    gcp_sol.p_refpitch = pitch * 1.0e6;
+    gcp_sol.p_refyaw = yaw * 1.0e6;
+    for (i = 0; i < NPARMS; i++)
+    {
+        for (j = 0; j < NPARMS; j++)
+        {
+            gcp_sol.p_cov[i][j] = precision_corr->cov[i][j];
+        }
+    }
+
+    /* Write the precision solution file */
+    status = put_solution(l1g_image_name, solution_filename, &gcp_sol);
+    if(status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing to the precision solution file: %s",
+            solution_filename);
+        return ERROR;
+    }
+
+    if (IAS_LOG_DEBUG_ENABLED())
+        print_debugging_information( &gcp_sol );
+
+    return SUCCESS;
+}
+
+
+void print_debugging_information
+(
+    const GCP_SOLUTION *gcp_sol     /* Precision information structure */
+)
+{
+    double s1,s2,s3,s4,s5,s6;
+    if ((gcp_sol->p_cov)[0][0] > 0)
+    {
+        s1 = sqrt((gcp_sol->p_cov)[0][0]);
+    }
+    else
+    {
+        s1 = (gcp_sol->p_cov)[0][0];
+        IAS_LOG_ERROR("NO sqrt call, Angle Sigmas - ROLL <= 0: %f", s1);
+    }
+
+    if ((gcp_sol->p_cov)[1][1] > 0)
+    {
+        s2 = sqrt((gcp_sol->p_cov)[1][1]);
+    }
+    else
+    {
+        s2 = (gcp_sol->p_cov)[1][1];
+        IAS_LOG_ERROR("NO sqrt call, Angle Sigmas - PITCH <= 0: %f", s2);
+    }
+
+    if ((gcp_sol->p_cov)[2][2] > 0)
+    {
+        s3 = sqrt((gcp_sol->p_cov)[2][2]);
+    }
+    else
+    {
+        s3 = (gcp_sol->p_cov)[2][2];
+        IAS_LOG_ERROR("NO sqrt call, Angle Sigmas - YAW <= 0: %f", s3);
+    }
+
+    if ((gcp_sol->p_cov)[6][6] > 0)
+    {
+        s4 = sqrt((gcp_sol->p_cov)[6][6]);
+    }
+    else
+    {
+        s4 = (gcp_sol->p_cov)[6][6];
+        IAS_LOG_ERROR("NO sqrt call, Rate Sigmas - ROLL <= 0: %f", s4);
+    }
+
+    if ((gcp_sol->p_cov)[7][7] > 0)
+    {
+        s5 = sqrt((gcp_sol->p_cov)[7][7]);
+    }
+    else
+    {
+        s5 = (gcp_sol->p_cov)[7][7];
+        IAS_LOG_ERROR("NO sqrt call,  Rate Sigmas - PITCH <= 0: %f", s5);
+    }
+
+    if ((gcp_sol->p_cov)[8][8] > 0)
+    {
+        s6 = sqrt((gcp_sol->p_cov)[8][8]);
+    }
+    else
+    {
+        s6 = (gcp_sol->p_cov)[8][8];
+        IAS_LOG_ERROR("NO sqrt call,  Rate Sigmas - YAW <= 0: %f", s6);
+    }
+    printf("  Angle Sigmas:\n"
+            "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - %10.3f\n"
+            "  Rate Sigmas:\n"
+            "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - "
+            "%10.3f\n\n",
+            s1, s2, s3,   /* sigma of roll, pitch, yaw    */
+            s4, s5, s6);  /* sigma for attitude rate  */
+
+    if ((gcp_sol->p_cov)[3][3] > 0)
+    {
+        s1 = sqrt((gcp_sol->p_cov)[3][3]);
+    }
+    else
+    {
+        s1 = (gcp_sol->p_cov)[3][3];
+        IAS_LOG_ERROR("NO sqrt call, Position Sigmas DX <= 0: %f", s1); 
+    }
+
+    if ((gcp_sol->p_cov)[4][4] > 0)
+    {
+        s2 = sqrt((gcp_sol->p_cov)[4][4]);
+    }
+    else
+    {
+        s2 = (gcp_sol->p_cov)[4][4];
+        IAS_LOG_ERROR("NO sqrt call, Position Sigmas DY <= 0: %f", s2);
+    }
+
+    if ((gcp_sol->p_cov)[5][5] > 0)
+    {
+        s3 = sqrt((gcp_sol->p_cov)[5][5]);
+    }
+    else
+    {
+        s3 = (gcp_sol->p_cov)[5][5];
+        IAS_LOG_ERROR("NO sqrt call, Position Sigmas DZ <= 0: %f", s3);
+    }
+
+    if ((gcp_sol->p_cov)[9][9] > 0)
+    {
+        s4 = sqrt((gcp_sol->p_cov)[9][9]);
+    }
+    else
+    {
+        s4 = (gcp_sol->p_cov)[9][9];
+        IAS_LOG_ERROR("NO sqrt call, Velosity Sigmas DX <= 0: %f", s4);
+    }
+
+    if ((gcp_sol->p_cov)[10][10] > 0)
+    {
+        s5 = sqrt((gcp_sol->p_cov)[10][10]);
+    }
+    else
+    {
+        s5 = (gcp_sol->p_cov)[10][10];
+        IAS_LOG_ERROR("NO sqrt call, Velosity Sigmas DY <= 0: %f", s5);
+    }
+
+    if ((gcp_sol->p_cov)[11][11] > 0)
+    {
+        s6 = sqrt((gcp_sol->p_cov)[11][11]);
+    }
+    else
+    {
+        s6 = (gcp_sol->p_cov)[11][11];
+        IAS_LOG_ERROR("NO sqrt call, Velosity Sigmas DZ <= 0: %f", s6);
+    }
+
+    printf("  Position Sigmas:\n"
+            "    dx - %10.3f\n    dy - %10.3f\n    dz - %10.3f\n"
+            "  Velocity Sigmas:\n"
+            "    dx - %10.3f\n    dy - %10.3f\n    dz - %10.3f\n\n",
+            s1, s2 ,s3,   /* sigma of dx, dy and dz       */
+            s4, s5 ,s6);  /* sigma for dx, dy and dz rate */
+}

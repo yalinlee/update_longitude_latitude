@@ -1,0 +1,39 @@
+/******************************************************************************
+NAME:           reset_observe_angle
+
+PURPOSE:        Reset the satellite state vector and the look angles
+                corresponding to each GCP, to their original values.
+
+RETURN VALUE:   none
+******************************************************************************/
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+void reset_observe_angle
+(
+    int num_gcp,            /* I: Number of GCPs used in the correction
+                                  solution */
+    GCP_STRUCT gcp_struct[] /* I/O: Structure of GCP information updated
+                                  for the satpos, satvel, delta, and psi */
+)
+{
+    int i;                /* Looping variable */
+
+    /* Loop over all GCPs */
+    for(i = 0; i < num_gcp; i++)
+    {
+        /* Copy the original values stored in satpos0 and satvel0 to the
+           "active" vectors satpos and satvel */
+        gcp_struct[i].satpos.x = gcp_struct[i].satpos0.x;
+        gcp_struct[i].satpos.y = gcp_struct[i].satpos0.y;
+        gcp_struct[i].satpos.z = gcp_struct[i].satpos0.z;
+        gcp_struct[i].satvel.x = gcp_struct[i].satvel0.x;
+        gcp_struct[i].satvel.y = gcp_struct[i].satvel0.y;
+        gcp_struct[i].satvel.z = gcp_struct[i].satvel0.z;
+
+        /* Copy the original values stored in delta0 and psi0 to the
+           "active" variables delta and psi */
+        gcp_struct[i].delta = gcp_struct[i].delta0;
+        gcp_struct[i].psi = gcp_struct[i].psi0;
+    }
+}

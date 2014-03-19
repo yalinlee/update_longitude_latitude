@@ -1,0 +1,286 @@
+#!/bin/tsch -f
+
+# This file should be sourced to setup the environment variables needed to
+# build the IAS libraries.  The source command should be in the form:
+#       source setup_dev /path/to/target/build/directory
+# If the parameter is not set, the build directory will default to:
+#       /$HOST/development/$USER/build_ias
+#
+#   Optional Parameters:
+#       Build environment:
+#           --enable-dev : defines extra environment variables for developers
+#           --32 : set up for a 32-bit build
+#           --64 : set up for a 64-bit build
+#           --cots-dir /cots/dir : allows setting a custom COTS directory
+#       Test controls (only used when dev environment is set up):
+#           --enable-db-tests  : enables database tests (default)
+#           --disable-db-tests : disable database tests
+#           --test-dir /test/data/dir : allows setting non-standard test data
+#                                       directory location
+
+# Parse command line arguments.  Since this script is sourced make sure the
+# variable, build_path, does not exist.  Also unset the ENABLE_DB_TESTS
+# environment variable.
+if ( ${?build_path} ) then
+    unset build_path
+endif
+
+# set defaults
+unset enable_dev
+set enable_db_tests = 1
+unset enable_64
+# IAS_BUILD_64BIT allows other setup scripts to know to setup the 64bit build
+unsetenv IAS_BUILD_64BIT
+set cots_dir = "COTS32"
+
+# set the default test_data_dir, and prepare for it to be overridden
+set test_data_dir = /$HOST/data1/test_data
+unset get_test_data_dir
+
+# assume no user specified COTS directory will be provided
+unset user_cots_dir
+unset get_user_cots_dir
+
+foreach cla ($*)
+    if (${?get_test_data_dir}) then
+        set test_data_dir = $cla
+        unset get_test_data_dir
+        set cla = "skipping"
+    endif
+    if (${?get_user_cots_dir}) then
+        set user_cots_dir = $cla
+        unset get_user_cots_dir
+        set cla = "skipping"
+    endif
+
+    switch ( $cla )
+        case "skipping":
+            breaksw
+        case "--disable-db-tests":
+            unset enable_db_tests
+            breaksw
+        case "--enable-db-tests":
+            # just ignore this one since it is the default
+            breaksw
+        case "--enable-dev":
+            set enable_dev = 1
+            breaksw
+        case "--64"
+            # building in 64-bit mode
+            set enable_64 = 1
+            setenv IAS_BUILD_64BIT 1
+            set cots_dir = "COTS64"
+            breaksw
+        case "--32"
+            # building in 32-bit mode
+            unset enable_64
+            unsetenv IAS_BUILD_64BIT
+            set cots_dir = "COTS32"
+            breaksw
+        case "--test-dir"
+            # get the test data dir next
+            set get_test_data_dir = 1
+            breaksw
+        case "--cots-dir"
+            # get the COTS user specified dir next
+            set get_user_cots_dir = 1
+            breaksw
+        default:
+            # If the user specified another argument, it will be used to set
+            # the IASBUILD location later in the script.
+            set build_path = $cla
+            breaksw
+    endsw
+end
+
+#############################################################################
+# set up the production environment variables first
+#############################################################################
+
+# set the path for the IAS build
+if (${?build_path}) then
+    # use the environment variable if provided
+    setenv IASBUILD $build_path
+    unset build_path
+else
+    # default to the user directory if dev is enabled
+    if (${?enable_dev}) then
+        setenv IASBUILD /$HOST/development/$USER/build_ias
+    else
+        echo "Error: build path not provided"
+        exit 1
+    endif
+endif
+
+# Set a "default" IAS_OPS environment variable to the value used in
+# iasbase_setup
+setenv IAS_OPS /$HOST/data1/$USER/ias_sys
+
+# Set the location for PERL Logger output
+setenv IAS_LOG $IAS_OPS/proddata/log
+
+# set the perl library directory
+setenv IASLIB_BASE $IASBUILD/iaslib
+setenv IASLIB_PERLLIB $IASLIB_BASE/perllib
+
+# make sure the perl library search path is setup correctly
+if ($?PERL5LIB) then
+    setenv PERL5LIB "${PERL5LIB}:${IASLIB_PERLLIB}"
+else
+    setenv PERL5LIB "${IASLIB_PERLLIB}"
+endif
+
+# Set the COTS directory location
+# FIXME - this should really only be setup up for developers.  But until the
+# installed location for the planetary ephemeris file is decided on, leave it
+# here
+if ($?user_cots_dir) then
+    # the COTS directory was specified, so use it
+    setenv COTS $user_cots_dir
+else if (-d $HOME/$cots_dir) then
+    # use the users local COTS library if present
+    setenv COTS $HOME/$cots_dir
+else
+    # otherwise, default to the standard build of COTS libraries
+    setenv COTS /home/ipecm/$cots_dir
+endif
+
+# set up the planetary ephemeris data file environment variable
+# FIXME - should this be getting used from an installed directory somewhere?
+# Or maybe this should be considered the installed location even though the
+# libraries are generally statically linked.
+setenv NOVAS_HOME $COTS/novas3.1
+setenv JPLDE421 $NOVAS_HOME/data/lnxp1900p2053.421
+
+# if the hdfview directory exists in the COTS directory, add it to the path
+if (-e $COTS/hdfview) then
+    set path = ($COTS/hdfview/bin $path)
+endif
+
+# if the hdf5 tools directory exists in the COTS directory, add it to the path
+if (-e $COTS/hdf5) then
+    set path = ($COTS/hdf5/bin $path)
+endif
+
+# set up QT, required in LD_LIBRARY_PATH for runtime users as well as developers
+if (${?enable_64}) then
+    # 64-bit build
+    setenv QTDIR  "/usr/local/qt"
+else
+    # 32-bit build
+    setenv QTDIR  "/usr/local/qt45-32"
+endif
+if (${?LD_LIBRARY_PATH}) then
+    setenv LD_LIBRARY_PATH "${LD_LIBRARY_PATH}:${QTDIR}/lib"
+else
+    setenv LD_LIBRARY_PATH "${QTDIR}/lib"
+endif
+set path=($QTDIR/bin $path)
+
+#############################################################################
+# set up the developer specific environment variables if requested
+#############################################################################
+if (${?enable_dev}) then
+
+    # set up the correct cflags (see INSTALL for background on why these flags
+    # are chosen)
+    if (${?enable_64}) then
+        # 64-bit build
+        setenv CFLAGS '-g -Wall -O2 -march=nocona -mfpmath=sse -msse2'
+        setenv ORACLE_HOME /home/oracle/11.2.0
+        # set the CXXFLAGS for the C++ in this library
+
+    else
+        setenv CFLAGS '-g -Wall -O2 -m32 -march=nocona -mfpmath=sse -msse2'
+        # Add the -D_FILE_OFFSET_BITS=64 flag to CFLAGS in order to allow
+        # the pixel mask library to handle pixel mask files larger than
+        # 2 GB.
+        setenv CFLAGS "${CFLAGS} -D_FILE_OFFSET_BITS=64"
+        setenv ORACLE_HOME /home/oracle/11.2.0_32
+    endif
+
+    # if building on a sparc box, override the CFLAGS
+    set cpu = `uname -p`
+    if ($cpu == "sparc") then
+        setenv CFLAGS '-g -Wall -O2'
+    endif
+
+    setenv CXXFLAGS "$CFLAGS"
+
+    setenv LD_LIBRARY_PATH "${LD_LIBRARY_PATH}:$ORACLE_HOME/lib"
+
+    # enable database tests if requested
+    if (${?enable_db_tests}) then
+        setenv ENABLE_DB_TESTS
+    endif
+
+    # set some environment variables for COTS packages
+    ##################################################
+    setenv GSL_HOME $COTS/gsl
+    setenv GSLINC $GSL_HOME/include
+    setenv GSLLIB $GSL_HOME/lib
+
+    # FIXME - remove these when calval stops using HDF4
+    setenv HDF_HOME $COTS/hdf
+    setenv HDFINC $HDF_HOME/include
+    setenv HDFLIB $HDF_HOME/lib
+
+    setenv ODL_HOME $COTS/odl
+    setenv ODLLIB $ODL_HOME
+    setenv ODLINC $ODL_HOME
+
+    setenv GCTP_HOME $COTS/gctp3
+    setenv GCTPINC $GCTP_HOME/include
+    setenv GCTPLIB $GCTP_HOME/lib
+
+    setenv HDF5_HOME $COTS/hdf5
+    setenv HDF5INC $HDF5_HOME/include
+    setenv HDF5LIB $HDF5_HOME/lib
+
+    setenv CGREEN_HOME $COTS/cgreen
+    setenv CGREENINC $CGREEN_HOME/include
+    setenv CGREENLIB $CGREEN_HOME/lib
+
+    setenv NOVASINC $NOVAS_HOME/include
+    setenv NOVASLIB $NOVAS_HOME/lib
+
+    setenv REMEZ_HOME $COTS/remez
+    setenv REMEZINC $REMEZ_HOME/include
+    setenv REMEZLIB $REMEZ_HOME/lib
+
+    # set up the IAS library build directory
+    setenv IASLIB_INC $IASLIB_BASE/include
+    setenv IASLIB_LIB $IASLIB_BASE/lib
+
+    # set up the directory for the test data
+    setenv IAS_UNIT_TEST_DATA_DIR $test_data_dir
+
+    # indicate the development environment was set up
+    setenv IAS_DEVELOPMENT_ENV "yes"
+
+    # set the IAS system user ID if not already defined
+    if (! ${?IAS_SYSTEM_USER_ID}) then
+        setenv IAS_SYSTEM_USER_ID $USER
+    endif
+
+    # if there is an odbd directory in COTS, set up an environment variable
+    # for that and add it to the LD_LIBRARY_PATH.  This is to support building
+    # on solaris where unixodbc might be installed in our COTS directory.
+    setenv ODBC_HOME ""
+    setenv ODBC_INC ""
+    setenv ODBC_LIB ""
+    if (-e $COTS/unixodbc) then
+        setenv ODBC_HOME $COTS/unixodbc
+        setenv ODBC_INC $ODBC_HOME/include
+        setenv ODBC_LIB $ODBC_HOME/lib
+    endif
+
+    # If there is an /home/ipecm/tools/bin directory, add it to the path.  This
+    # is where we keep some shared tools installed, such as valgrind, that are
+    # very out of date in the default Linux install.  It is added to the
+    # beginning of the path so it will override the system versions of tools.
+    if (-e /home/ipecm/tools/bin) then
+        set path=(/home/ipecm/tools/bin $path)
+    endif
+endif
+

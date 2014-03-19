@@ -1,0 +1,547 @@
+/****************************************************************************
+NAME:     correct_los_model.c
+
+PURPOSE:  Using the Correlation results, find the precision corrections of
+          the ground control points and update the ephemeris and attitude
+          precision values.
+
+RETURN VALUE:
+EXIT_SUCCESS    completed successfully
+EXIT_FAILURE    error occurred
+
+*******************************************************************************
+                        Property of the U.S. Government
+                             USGS EROS Data Center
+*****************************************************************************/
+#include <stdlib.h>
+#include <string.h>
+#include "ias_types.h"
+#include "ias_const.h"
+#include "ias_satellite_attributes.h"
+#include "ias_cpf.h"
+#include "ias_gcp.h"
+#include "ias_l1g.h"
+#include "ias_los_model.h"
+#include "ias_logging.h"
+#include "ias_model_io.h"
+#include "ias_geo.h"
+#include "database_structures.h"
+#include "correct_los_model.h"
+
+static IAS_GEO_PROJ_TRANSFORMATION *degrees2map = NULL;
+/* Projection transformation to go from the geographic projection in degrees to
+   the output projection */
+
+static IAS_GEO_PROJ_TRANSFORMATION *radians2map = NULL;
+/* Projection transformation to go from the geographic projection in radians to
+   the output projection */
+
+static IAS_GEO_PROJ_TRANSFORMATION *map2degrees = NULL;
+/* Projection transformation to go from the output projection to degrees */
+
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_degrees2map()
+{
+    return degrees2map;
+}
+
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_radians2map()
+{
+    return radians2map;
+}
+
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_map2degrees()
+{
+    return map2degrees;
+}
+
+int main(int argc, char *argv[])
+{
+    int status;                     /* Routine return status */
+    int  numgcp;                    /* Number of ground control points */
+    double apri_observe_sig[2];      /* Observation a priori standard
+                                       deviation */
+    double vvr[2];                  /* Posterior noise level sigma for angles,
+                                       where [0] across track,[1] along track */
+    double ref_time[3];             /* Reference time 0: year, 1: day, 2: sec */
+    double sat_height;              /* Height of the satellite in meters */
+    double outlier_fraction;        /* Fraction of GCPs that are outliers */
+    IAS_CPF *cpf = NULL;            /* Calibration parameter file constants */
+    const struct IAS_CPF_GEO_SYSTEM *geo_system;
+    const struct IAS_CPF_EARTH_CONSTANTS *earth_constants;
+    const struct IAS_CPF_ORBIT_PARAMETERS *orbit_parameters;
+    IAS_LOS_MODEL *model;           /* OLI model structure */
+    IAS_GCP_RESULTS *gcp_data;      /* GCP data records */
+    GCP_STRUCT *gcp_struct;         /* GCP structure for precision process */
+    PRECISION_CORRECTIONS precision_corr;/* Precision correction information */
+    int band_number;                /* True OLI band number */
+    int band_index;                 /* Band index */
+    ALIGNMENT_CHAR_DATA align_stats;/* OLI sensor alignment info */
+    GCP_CHAR_DATA *gcp_stats = NULL;/* Array of GCP characterization results */
+    L1GIO *l1g_ptr;                 /* L1G image pointer */
+    IAS_L1G_FILE_METADATA fmd;      /* Image file metadata */
+    int precision_succeeded_flag = 0;
+    char *app_name;
+    double geo_parms[IAS_PROJ_PARAM_SIZE];/* geographic projection parameters */
+    IAS_PROJECTION l1g_proj;        /* 1G projection info */
+    IAS_PROJECTION geo_proj;        /* Geographic projection info */
+    int i;
+
+    /* Strip off the path to the application so that the logging library
+       doesn't log it and initialize the library */
+    app_name = strrchr( argv[0], '/');
+    if ( app_name == NULL )
+        app_name = argv[0];
+    else
+        app_name++;
+    ias_log_initialize(app_name);
+
+    /* Make sure a parameter file exists */
+    if (argc != 2)
+    {
+        IAS_LOG_ERROR("Usage: %s <parameter file>", app_name);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Get the input parameters */
+    status = read_parameters(argv[1], &cpf);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Reading input parameters from %s", argv[1] );
+        exit(EXIT_FAILURE);    
+    }
+
+    get_precision_corr_information(&precision_corr);
+
+    /* Initial message */
+    IAS_LOG_INFO("Initiated correct_los_model");
+
+    /* Retrieve the CPF groups needed */
+    geo_system = ias_cpf_get_geo_system(cpf);
+    earth_constants = ias_cpf_get_earth_const(cpf);
+    orbit_parameters = ias_cpf_get_orbit(cpf);
+    if ( geo_system == NULL || earth_constants == NULL
+            || orbit_parameters == NULL )
+    {
+        IAS_LOG_ERROR("Reading CPF parameters");
+        ias_cpf_free(cpf);
+    }
+
+    /* Read the GCP correlation results */
+    status = ias_gcp_read_correlation_results(get_gcp_data_filename(),
+            earth_constants->semi_major_axis, earth_constants->ellipticity,
+            &gcp_data, &numgcp);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Reading the GCP correlation results");
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* 
+     * If no GCP results where found, skip LOS correction and only update
+     * the OMF file to use the systematic model.
+     */
+    if (numgcp == 0)
+    {
+        IAS_LOG_INFO("No GCPs available");
+        ias_cpf_free(cpf);
+
+        /* Check if a precision product is required */
+        if (get_precision_required_flag())
+        {
+            IAS_LOG_ERROR("The required precision solution could not be "
+                      "calculated");
+            exit(EXIT_FAILURE);
+        }
+
+        status = update_omf(0, 0, -1.0, -1.0, -1.0);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Updating OMF file: %s", get_omf_filename());
+            exit(EXIT_FAILURE);
+        }
+
+        IAS_LOG_INFO("Successful completion");
+
+        exit(EXIT_SUCCESS);
+    }
+
+    /* Get the band number and index from the GCPDATA structure */
+    band_number = gcp_data->search_band;
+    band_index = ias_sat_attr_convert_band_number_to_index(band_number);
+    if ( band_index == ERROR )
+    {
+        IAS_LOG_ERROR("Converting band number %d to index", band_number );
+        free(gcp_data);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Open the L1G file and the attribute sca band */
+    l1g_ptr = ias_l1g_open_image(get_l1g_filename(), IAS_READ);
+    if (l1g_ptr == NULL)
+    {
+        IAS_LOG_ERROR("Image %s cannot be opened", get_l1g_filename());
+        free(gcp_data);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Get the file metadata */
+    if(ias_l1g_get_file_metadata(l1g_ptr, &fmd) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Reading file metadata.");
+        free(gcp_data);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Open the model file and fill the model structure */
+    model = ias_model_read(get_syst_model_filename());
+    if (!model)
+    {
+        IAS_LOG_ERROR("Reading model file %s", get_syst_model_filename()); 
+        ias_l1g_close_image(l1g_ptr);
+        free(gcp_data);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Create and populate the gcp_struct */
+    status = initialize_gcp_struct(gcp_data, numgcp, l1g_ptr, &gcp_struct);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Initializing the GCP structure");
+        free(gcp_data);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* get the projection information */
+    status = get_proj_info(l1g_ptr, &l1g_proj);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the projection information");
+        free(gcp_struct);
+        ias_l1g_close_image(l1g_ptr);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Set up the geographic projection with units of degrees */
+    for (i = 0; i < IAS_PROJ_PARAM_SIZE; i++)
+        geo_parms[i] = 0.0;
+    ias_geo_set_projection(GEO, NULLZONE, DEGREE, l1g_proj.spheroid, geo_parms,
+        &geo_proj);
+
+    /* Create the three projection transformations needed */
+    degrees2map = ias_geo_create_proj_transformation(&geo_proj, &l1g_proj);
+    if (!degrees2map)
+    {
+        IAS_LOG_ERROR("Creating degrees to map projection transformation");
+        free(gcp_struct);
+        ias_l1g_close_image(l1g_ptr);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+    map2degrees = ias_geo_create_proj_transformation(&l1g_proj, &geo_proj);
+    if (!map2degrees)
+    {
+        IAS_LOG_ERROR("Creating map to degrees projection transformation");
+        ias_geo_destroy_proj_transformation(degrees2map);
+        free(gcp_struct);
+        ias_l1g_close_image(l1g_ptr);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Use radians for the units of the next projection */
+    geo_proj.units = RADIAN;
+    radians2map = ias_geo_create_proj_transformation(&geo_proj, &l1g_proj);
+    if (!radians2map)
+    {
+        IAS_LOG_ERROR("Creating radians to map projection transformation");
+        ias_geo_destroy_proj_transformation(map2degrees);
+        ias_geo_destroy_proj_transformation(degrees2map);
+        free(gcp_struct);
+        ias_l1g_close_image(l1g_ptr);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Populate the characterization data structure with info that is
+       now available from the input parameters */
+    align_stats.nbr_gcps_used = numgcp;
+    align_stats.outlier_threshold = get_outlier_threshold();
+    strcpy(align_stats.gcp_source, gcp_struct[0].chip_source);
+
+    /* Get the satellite position and velocity */
+    status = get_position_and_reference_time(l1g_ptr, get_grid_filename(),
+        model, numgcp, gcp_data->search_band, gcp_struct, ref_time);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Finding the satellite position and reference time");
+        ias_geo_destroy_proj_transformation(map2degrees);
+        ias_geo_destroy_proj_transformation(degrees2map);
+        ias_geo_destroy_proj_transformation(radians2map);
+        free(gcp_data);
+        free(gcp_struct);
+        ias_l1g_close_image(l1g_ptr);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+    IAS_LOG_INFO("Finished getting satellite time and position");
+
+    /* Free the GCP struct */
+    free(gcp_data);
+    gcp_data = NULL;
+
+    /* Calculate the correction parameters */
+
+    /* Convert Orbit_Radius from km to meters before finding sat height */
+    sat_height = orbit_parameters->nominal_orbit_radius * 1000.0
+        - earth_constants->semi_major_axis;
+
+    /* load the observation apri weights based on chip_source */
+    if (strcmp(gcp_struct->chip_source, "DOQ") == 0)
+    {
+        get_doq_observation_sigma_apri(apri_observe_sig);
+    }
+    else if (strcmp(gcp_struct->chip_source, "GLS") == 0)
+    {
+        get_gls_observation_sigma_apri(apri_observe_sig);
+    }
+    else
+    {
+        get_gls_observation_sigma_apri(apri_observe_sig);
+        IAS_LOG_WARNING("Warning: Using GLS observation apri for chip "
+                    "source %s", gcp_struct->chip_source);
+    }
+
+    /* Done with the L1G */
+    status = ias_l1g_close_image(l1g_ptr);
+    l1g_ptr = NULL;
+    if ( status != SUCCESS )
+    {
+        IAS_LOG_ERROR("Closing the L1G image: %s", get_l1g_filename());
+        ias_geo_destroy_proj_transformation(map2degrees);
+        ias_geo_destroy_proj_transformation(degrees2map);
+        ias_geo_destroy_proj_transformation(radians2map);
+        free(gcp_struct);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    status = calc_correction(get_parameter_option(),
+            get_time_rate_estimation_flag(), ref_time[2], numgcp,
+            apri_observe_sig, get_residual_filename(), get_max_iterations(),
+            get_outlier_threshold(), earth_constants->semi_major_axis,
+            sat_height, model, gcp_struct, &precision_corr, vvr,
+            &precision_succeeded_flag);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Finding the correction solution");
+        ias_geo_destroy_proj_transformation(map2degrees);
+        ias_geo_destroy_proj_transformation(degrees2map);
+        ias_geo_destroy_proj_transformation(radians2map);
+        free(gcp_struct);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    ias_geo_destroy_proj_transformation(map2degrees);
+    map2degrees = NULL;
+    ias_geo_destroy_proj_transformation(degrees2map);
+    degrees2map = NULL;
+    ias_geo_destroy_proj_transformation(radians2map);
+    radians2map = NULL;
+
+    /* Only do the following if sufficient GCPs were found for the solution */
+    if (precision_succeeded_flag)
+    {
+        IAS_LOG_INFO("Finished calculating the precision corrections");
+
+        /* Generate GCP trending data */
+        gcp_stats = allocate_gcp_stats(precision_corr.num_valid_gcp);
+        if ( gcp_stats == NULL )
+        {
+            IAS_LOG_ERROR("Getting the GCP statistics structure");
+            free(gcp_struct);
+            ias_los_model_free(model);
+            ias_cpf_free(cpf);
+            exit(EXIT_FAILURE);
+        }
+
+        status = get_gcp_characterization_data(numgcp, gcp_struct,
+            &model->earth, ref_time, &(precision_corr.num_valid_gcp),
+            gcp_stats);
+        if ( status != SUCCESS )
+        {
+            IAS_LOG_ERROR("Getting the GCP statistics characterization data");
+            free_gcp_stats(gcp_stats);
+            free(gcp_struct);
+            ias_los_model_free(model);
+            ias_cpf_free(cpf);
+            exit(EXIT_FAILURE);
+        }
+
+        /* Calculate the corresponding OLI alignment parameters */
+        calc_alignment(model->sensor.bands[band_index].sensor, &precision_corr,
+                ref_time, &align_stats);
+
+        /* Report out solution metrics */
+        IAS_LOG_INFO("Pre-fit RMS residuals:   X = %7.3lf meters  "
+                "Y = %7.3lf meters", precision_corr.rms_prefit[0],
+                precision_corr.rms_prefit[1]);
+        IAS_LOG_INFO("Post-fit RMS residuals:  X = %7.3lf meters  "
+                "Y = %7.3lf meters", precision_corr.rms_postfit[0],
+                precision_corr.rms_postfit[1]);
+        outlier_fraction = (double)(numgcp-precision_corr.num_valid_gcp)
+            / (double)numgcp;
+        IAS_LOG_INFO("GCP Outlier Percentage: %6.2lf percent",
+                outlier_fraction * 100.0);
+
+        /* Check actual RMSE and percent values against thresholds to see if
+           precision correction was "good enough" to accept the precision
+           product, otherwise fallback to the systematic product. */
+        determine_precision_success(outlier_fraction, &precision_corr, 
+            geo_system, &precision_succeeded_flag); 
+    }
+
+    free(gcp_struct);
+    gcp_struct = NULL;
+
+    /* If there is no precision solution, but the precision required flag is 
+       set, log an error and exit */
+    if (!precision_succeeded_flag && get_precision_required_flag())
+    {
+        IAS_LOG_ERROR("The required precision solution could not be "
+                      "calculated");
+        free_gcp_stats(gcp_stats);
+        ias_los_model_free(model);
+        ias_cpf_free(cpf);
+        exit(EXIT_FAILURE);
+    }
+
+    if (precision_succeeded_flag)
+    {
+        /* Initialize the number of leap seconds since applying the model
+           needs the information available */
+        if (ias_math_init_leap_seconds_from_UTC_time(ref_time,
+            &earth_constants->leap_seconds_data) != SUCCESS)
+        {
+            IAS_LOG_ERROR("Initializing leap seconds");
+            free_gcp_stats(gcp_stats);
+            ias_los_model_free(model);
+            ias_cpf_free(cpf);
+            exit(EXIT_FAILURE);
+        }
+
+        /* Finish processing by writing to output files */
+        status = finish_processing(get_syst_model_filename(),
+                get_prec_model_filename(), get_solution_filename(),
+                get_l1g_filename(), model, &precision_corr, ref_time,
+                &align_stats);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Updating the precision model");
+            free_gcp_stats(gcp_stats);
+            ias_los_model_free(model);
+            ias_cpf_free(cpf);
+            exit(EXIT_FAILURE);
+        }
+
+        /* Populate the database, if requested */
+        if (get_store_in_database_flag())
+        {
+            /* Get a database connection */
+            status = connect_to_db();
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Could not connect to database");
+                free_gcp_stats(gcp_stats);
+                ias_los_model_free(model);
+                ias_cpf_free(cpf);
+                exit(EXIT_FAILURE);
+            }
+
+            /* Populate the database with alignment characterization */
+            status = store_solution_alignment_in_db(&align_stats);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Storing alignment data in database");
+                disconnect_from_database(IAS_DB_ROLLBACK);
+                free_gcp_stats(gcp_stats);
+                ias_los_model_free(model);
+                ias_cpf_free(cpf);
+                exit(EXIT_FAILURE);
+            }
+
+            /* Populate the database with GCP characterization */
+            status = store_gcp_residuals_in_db(gcp_stats,
+                    precision_corr.num_valid_gcp);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Storing GCP data in database");
+                disconnect_from_database(IAS_DB_ROLLBACK);
+                free_gcp_stats(gcp_stats);
+                ias_los_model_free(model);
+                ias_cpf_free(cpf);
+                exit(EXIT_FAILURE);
+            }
+
+            /* Close the database connection */
+            status = disconnect_from_database(IAS_DB_COMMIT);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Disconnecting from database");
+                free_gcp_stats(gcp_stats);
+                ias_los_model_free(model);
+                ias_cpf_free(cpf);
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    else
+    {
+        /* the following should be zeros if precision correction failed */
+        align_stats.nbr_gcps_used = 0;
+        align_stats.rms_gcp_fit = 0.0;
+        precision_corr.rms_postfit[0] = 0.0;
+        precision_corr.rms_postfit[1] = 0.0;
+    }
+
+    ias_cpf_free(cpf);
+    cpf = NULL;
+
+    /* Free GCP statistics */
+    free_gcp_stats(gcp_stats);
+    gcp_stats = NULL;
+
+    /* Free model */
+    ias_los_model_free(model);
+    model = NULL;
+
+    /* Update the OMF file to contain the outputs from precision correction
+       needed by down-stream IAS processing components */
+    status = update_omf(precision_succeeded_flag, align_stats.nbr_gcps_used,
+                        align_stats.rms_gcp_fit, precision_corr.rms_postfit[0],
+                        precision_corr.rms_postfit[1]);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Updating OMF file: %s", get_omf_filename());
+        return ERROR;
+    }
+
+    /* Write completion message */
+    IAS_LOG_INFO("Successful completion");
+
+    return EXIT_SUCCESS;
+}

@@ -1,0 +1,48 @@
+/******************************************************************************
+NAME:           calc_line_of_sight
+
+PURPOSE:        Calculate the line-of-sight from the satellite position to the 
+                ground point from their position coordinates.
+
+RETURN VALUE:   none
+
+ALGORITHM REFERENCES:
+D. Kuang, original development, Nov. 1995.
+*******************************************************************************
+                       Property of the U.S. Government
+                          USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_structures.h"
+#include "ias_math.h"
+#include "correct_los_model.h"
+
+void calc_line_of_sight
+(
+    const IAS_VECTOR *pixpos,/* I: Position vector of the point in Earth-fixed
+                                   system, in meters */
+    const IAS_VECTOR *satpos,/* I: Position vector of the satellite at the time
+                                   when the ground point was imaged, in the
+                                   Earth-fixed sytem, in meters */
+    double Tef2oo[3][3],    /* I: 3 X 3 transformation matrix from the
+                                  Earth-fixed system to Orbit-oriented system */
+    double *delta,          /* O: Across-track angle, in radians */
+    double *psi             /* O: Along-track angle, in radians */
+)
+{
+    IAS_VECTOR d;       /* Look vector in the Earth-fixed system (meters) */
+    IAS_VECTOR dg;      /* Look vector in the Orbit oriented system (meters) */
+
+    d.x = pixpos->x - satpos->x;
+    d.y = pixpos->y - satpos->y;
+    d.z = pixpos->z - satpos->z;
+
+    /* Transform from d to dg */
+    ias_math_transform_3dvec(&d, Tef2oo, &dg);
+
+    /* Across track angle */
+    *delta = atan2(dg.y , dg.z);
+
+    /* Along track angle */
+    *psi = atan2(dg.x , dg.z);
+}

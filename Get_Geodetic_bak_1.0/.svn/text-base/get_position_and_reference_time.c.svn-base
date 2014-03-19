@@ -1,0 +1,261 @@
+/*****************************************************************************
+NAME:           get_position_and_reference_time
+
+PURPOSE:  Find the satellite position and reference time.
+
+RETURN VALUE:
+SUCCESS         Successfully obtained the position and time
+ERROR           Error occurred; position returned not valid
+
+ALGORITHM REFERENCES:
+*******************************************************************************
+                        Property of the U.S. Government
+                            USGS EROS Data Center
+*****************************************************************************/
+#include "ias_types.h"
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_satellite_attributes.h"
+#include "ias_grid.h"
+#include "ias_grid_io.h"
+#include "ias_l1g.h"
+#include "ias_math.h"
+#include "ias_los_model.h"
+#include "correct_los_model.h"
+
+#define MIN(a,b) (((a)<(b))?(a):(b))
+
+int get_position_and_reference_time
+(
+    L1GIO *l1g_ptr,             /* I: L1G structure with OPEN band */
+    const char *grid_filename,  /* I: Geometric grid file */
+    const IAS_LOS_MODEL *model, /* I: Systematic OLI model */
+    int numgcp,                 /* I: Number of ground control points */
+    int srch_band,              /* I: Search Band number */
+    GCP_STRUCT *gcp_struct,     /* I/O: GCP structure for precision process */
+    double ref_time[3]          /* O: Reference time year,day,seconds */
+)
+{
+    IAS_GRID_TYPE sys_grid;         /* Grid structure */
+    int band_number;                /* Band number */
+    int band_index;                 /* Band index */
+    int grid_band_number[1];        /* Search band number for reading grid */
+    double transf_matrix[12];       /* Matrix of line/sample of QR function */
+    double tmean = 0.0;             /* Mean time of the data span */
+    double vector_v[4];             /* Work vector for QR routines */
+    double vector_x[4];             /* Vector of x search space */
+    double vector_y[4];             /* Vector of y search space */
+    double os_line;                 /* Output search line */
+    double os_samp;                 /* Output search sample */
+    double height;                  /* GCP image height from DEM */
+    int sca;                        /* SCA counter */
+    double scaedge;                 /* Distance of point from edge of SCA */
+    double x1R_line;                /* 1R raw image line */
+    double x1R_samp;                /* 1R raw image sample */
+    double v1R_line;                /* Valid 1R raw image line */
+    double v1R_samp;                /* Valid 1R raw image sample */
+    int v1R_sca;                    /* Valid 1R image SCA */
+    double s_major;                 /* Semi-major axis */
+    double s_minor;                 /* Semi-minor axis */
+    double tref[3];                 /* Reference time year,day,seconds */
+    double flat;                    /* Flattening */
+    int i;                          /* Loop control variable */
+    int j;                          /* Loop control variable */
+    int status;                     /* Routine return status */
+    int number_lines;               /* Image size in lines */
+    int number_samples;             /* Image size in samples */
+    int number_scas;                /* Image size numbe of SCAs */
+    IAS_DATA_TYPE data_type;
+    IAS_L1G_BAND_METADATA bmeta;
+    int count_used;                 /* Number of GCPs that are used */
+
+    /* Get the band number from the GCPDATA structure and the band index
+       from the attributes library */
+    band_number = srch_band;
+    band_index = ias_sat_attr_convert_band_number_to_index(band_number);
+    if ( band_index == ERROR )
+    {
+        IAS_LOG_ERROR("Converting band number %d to index", band_number );
+        return ERROR;
+    }
+
+    /* Get the L1G band metadata */
+    status = ias_l1g_get_band_metadata(l1g_ptr, band_number, &bmeta);
+    if(status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Retrieving L1G band metadata"); 
+        return ERROR;
+    }
+
+    /* Get the band size */
+    status = ias_l1g_get_band_size(l1g_ptr, band_number, &data_type,
+            &number_scas, &number_lines, &number_samples);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the size of L1G band %d", band_number); 
+        return ERROR;
+    }
+
+    /* Get the transformation matrix for eval_poly to get projection 
+       coordinates.  Note:  upper left corner is (0,0) */
+    for (i = 0; i < 4; i++)
+        transf_matrix[i] = 1.0;
+
+    /* UL sample */
+    transf_matrix[4] = 0.0;
+    /* UR sample */
+    transf_matrix[5] = number_samples - 1.0;
+    /* LL sample */
+    transf_matrix[6] = 0.0;
+    /* LR sample */
+    transf_matrix[7] = number_samples - 1.0;
+    /* UL line */
+    transf_matrix[8] = 0.0;
+    /* UR line */
+    transf_matrix[9] = 0.0;
+    /* LL line */
+    transf_matrix[10] = number_lines - 1.0;
+    /* LR line */
+    transf_matrix[11] = number_lines - 1.0;
+
+    /* UL proj corner x coord */
+    vector_x[0] = bmeta.upper_left_x;
+    /* UR proj corner x coord */
+    vector_x[1] = bmeta.upper_right_x;
+    /* LL proj corner x coord */
+    vector_x[2] = bmeta.lower_left_x;
+    /* LR proj corner x coord */
+    vector_x[3] = bmeta.lower_right_x;
+    /* UL proj corner y coord */
+    vector_y[0] = bmeta.upper_left_y;
+    /* UR proj corner y coord */
+    vector_y[1] = bmeta.upper_right_y;
+    /* LL proj corner y coord */
+    vector_y[2] = bmeta.lower_left_y;
+    /* LR proj corner y coord */
+    vector_y[3] = bmeta.lower_right_y;
+
+    status = ias_math_matrix_QRfactorization(transf_matrix, 4, 3, vector_v, 0);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Pervorming QR factorization of line sample matrix");
+        return ERROR;
+    }
+    status = ias_math_matrix_QRsolve(transf_matrix, 4, 3, vector_v, vector_x,
+            0);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the line sample matrix solution");
+        return ERROR;
+    }
+    status = ias_math_matrix_QRsolve(transf_matrix, 4, 3, vector_v, vector_y,
+            0);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the line sample matrix solution");
+        return ERROR;
+    }
+
+    /* Get the flattening value from a the OLI model Earth parameters */
+    s_major = model->earth.semi_major_axis;
+    s_minor = model->earth.semi_minor_axis;
+    flat = 1 - s_minor / s_major;
+
+    /* Read grid file  */
+
+    /* Only read the band we're processing */
+    grid_band_number[0] = band_number;
+    status = ias_grid_read(grid_filename, grid_band_number, 1, &sys_grid);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Reading band %d from grid %s", grid_band_number[0],
+                grid_filename);
+        return ERROR;
+    }
+
+    /* For each GCP */
+    count_used = 0;
+    for (i = 0; i < numgcp; i++)
+    {
+        /* Determine the satellite line and sample */
+        os_line = gcp_struct[i].x1Gline;
+        os_samp = gcp_struct[i].x1Gsamp;
+        height = gcp_struct[i].dem_elevation;
+
+        /* Get the 1R line and sample using the grid */
+        gcp_struct[i].accept_flag = INVALID_POINT;
+        scaedge = 0.0;
+        v1R_line = 0.0;
+        v1R_samp = 0.0;
+        v1R_sca = -1;
+        for (sca = 0; sca < model->sensor.bands[band_index].sca_count; sca++)
+        {
+            /* Get a local copy of the number of detectors for this SCA */
+            int num_dets = model->sensor.bands[band_index].scas[sca].detectors;
+
+            if ((ias_grid_3d_ols2ils(&sys_grid.gridbands[band_index][sca],
+                            os_line, os_samp, &x1R_line, &x1R_samp, height)
+                        == SUCCESS) && (x1R_samp > 0.0)
+                    && (x1R_samp < num_dets - 1))
+            {
+                if (MIN(x1R_samp, num_dets - 1 - x1R_samp) > scaedge)
+                {
+                    scaedge = MIN(x1R_samp, num_dets - 1 - x1R_samp);
+                    gcp_struct[i].accept_flag = GOOD_POINT;
+                    v1R_line = x1R_line;
+                    v1R_samp = x1R_samp;
+                    v1R_sca = sca;
+                }
+            }
+        }
+
+        if (gcp_struct[i].accept_flag < GOOD_POINT)
+        {
+            IAS_LOG_WARNING("Point %s was in the fill area - considering it "
+                    "an invalid point", gcp_struct[i].point_id);
+        }
+        else
+        {
+            /* Get the position and time */
+            status = add_position(model, v1R_line, v1R_samp, band_index,
+                    v1R_sca, vector_y, vector_x, s_major, flat,
+                    tref, &(gcp_struct[i]));
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Getting the position and time");
+                ias_grid_free(&sys_grid);
+                return ERROR;
+            }
+
+            /* Extract the time information; accomodate two different days */
+            if (i == 0)
+            {
+                for (j = 0; j < 3; j++)
+                    ref_time[j] = tref[j];
+            }
+            tref[2] += (tref[1] - ref_time[1]) * IAS_SEC_PER_DAY;
+            gcp_struct[i].time = tref[2];
+            tmean += tref[2];
+            count_used++;
+        }
+    }
+
+    ias_grid_free(&sys_grid);
+    /* Take the mean time of the data span as the reference time */
+    if (count_used == 0)
+    {
+        IAS_LOG_ERROR("Attempting to divide by zero");
+        return ERROR;
+    }
+    tmean = tmean / count_used;
+    if(tmean > IAS_SEC_PER_DAY)
+    {
+        ref_time[1] += 1.0;
+        ref_time[2] = tmean - IAS_SEC_PER_DAY;
+    }
+    else
+    {
+        ref_time[2] = tmean;
+    }
+    return SUCCESS;
+}

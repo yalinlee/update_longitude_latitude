@@ -1,0 +1,222 @@
+/******************************************************************************
+NAME:           write_residuals
+
+PURPOSE:        Write out the residual for along and across track components
+                for each GCP to the residual file;
+
+ALGORITHM REFERENCES:
+
+FUNCTIONS:
+write_residuals         Writes the residual information to file.
+write_init              Allocates memory for the residual file pointer
+write_free              Frees the residual file pointer
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_satellite_attributes.h"
+#include "ias_miscellaneous.h"
+#include "ias_misc_gcp_residuals.h"
+#include "ias_los_model.h"
+#include "correct_los_model.h"
+
+/* Keep a local, static pointer to a buffer large enough to hold enough
+   GCP_RESIDUAL structures as we have ground control points.  This will
+   keep us from having to allocate memory each time that we're called. */
+static IAS_MISC_GCP_RESIDUAL *resptr = 0;
+
+int write_residuals
+(
+    int iter,               /* I: Iteration number */
+    FILE *file_pointer,     /* I: Pointer to the rfile (residual file) */
+    int num_gcp,            /* I: The number of GCPs used in the solution; */
+    const IAS_LOS_MODEL *model,/* I: OLI model */
+    GCP_STRUCT *gcp_struct, /* I/O: Array of GCP information structures */
+    double *rms             /* O: X and Y RMS residuals in ground units */
+)
+{
+    int i;                      /* Looping variables */
+    int num_residuals;          /* number of residuals */
+    int numvalid;               /* Number of non-outlier residuals */
+    double cos_delta;           /* The cosine of the GCP delta */
+    double scale;               /* Microradian to meter scaling variable */
+    double valpha;              /* Alpha value for microradian to meter
+                                   scaling */
+    double vbeta;               /* Beta value for microradian to meter
+                                   scaling */
+    double earthrad;            /* Earth radius at GCP location in meters */
+    double satrad;              /* Satellite radius at time of GCP imaging
+                                   (meters) */
+    double b, c, d;             /* Temp satellite geometry variables */
+    double uradsper_alpha;      /* Microradians per meter across track */
+    double uradsper_beta;       /* Microradians per meter along track */
+    int status;
+    IAS_REPORT_HEADER *report_header;
+
+    /* Initialize RMS */
+    rms[0] = 0.0;
+    rms[1] = 0.0;
+    num_residuals = 0;
+    numvalid = 0;
+
+    /* Loop over all GCPs */
+    for(i = 0; i < num_gcp; i++)
+    {
+        /* skip invalid points */
+        if (gcp_struct[i].accept_flag == INVALID_POINT)
+            continue;
+
+        /* Added logic to rescale residuals to meters on output.
+           We do this by scaling alpha to a Y shift using the partial
+           derivative w.r.t. spacecraft Y and then scaling to the ground,
+           and then doing the same thing for beta using the partial
+           derivative w.r.t. spacecraft X. */
+        cos_delta = cos(gcp_struct[i].delta);
+        earthrad = sqrt(gcp_struct[i].pixpos.x * gcp_struct[i].pixpos.x
+                + gcp_struct[i].pixpos.y * gcp_struct[i].pixpos.y
+                + gcp_struct[i].pixpos.z * gcp_struct[i].pixpos.z);
+        satrad = sqrt(gcp_struct[i].satpos0.x *gcp_struct[i].satpos0.x
+                + gcp_struct[i].satpos0.y *gcp_struct[i].satpos0.y
+                + gcp_struct[i].satpos0.z *gcp_struct[i].satpos0.z);
+        scale = earthrad / satrad;
+        c = satrad * sin(gcp_struct[i].delta);
+
+        /* Check for square root of negative number */
+        if (c > earthrad)
+        {
+            IAS_LOG_ERROR("Attempting square root of a negative number");
+            return ERROR;
+        }
+        b = sqrt(earthrad*earthrad - c * c);
+        d = satrad * cos_delta - b;
+
+        /* Check for division by zero error */
+        if ((satrad == 0.0) || (d == 0.0) || (cos_delta == 0.0))
+        {
+            IAS_LOG_ERROR("Attempting to divide by zero");
+            return ERROR;
+        }
+        uradsper_alpha = b * 1.0e6 / (satrad * d);
+        uradsper_beta = (satrad - d * cos_delta) * 1.0e6
+            / (satrad * d * cos_delta);
+
+        /* Check for division by zero error */
+        if ((uradsper_alpha == 0.0) || (uradsper_beta == 0.0))
+        {
+            IAS_LOG_ERROR("Attempting to divide by zero");
+            return ERROR;
+        }
+        valpha = gcp_struct[i].alpha * scale / uradsper_alpha;
+        vbeta = gcp_struct[i].beta * scale / uradsper_beta;
+
+        /* Get the residual values in projection space */
+        status = get_ground_residuals(model, i, gcp_struct);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Converting residual to projection space");
+            return ERROR;
+        }
+
+        /* Copy the information for this GCP from the GCP_STRUCT into a
+           GCP_RESIDUAL suitable for use by ias_misc_write_gcp_residuals() */
+        strcpy(resptr[num_residuals].point_id, gcp_struct[i].point_id);
+        resptr[num_residuals].band_number = gcp_struct[i].band_number;
+        resptr[num_residuals].outlier_flag = gcp_struct[i].accept_flag;
+        resptr[num_residuals].predicted_line = gcp_struct[i].pred_line;
+        resptr[num_residuals].predicted_sample = gcp_struct[i].pred_samp;
+        resptr[num_residuals].seconds_from_epoch = gcp_struct[i].time;
+        resptr[num_residuals].latitude = gcp_struct[i].latitude;
+        resptr[num_residuals].longitude = gcp_struct[i].longitude;
+        resptr[num_residuals].height = gcp_struct[i].elevation;
+        resptr[num_residuals].across_track_angle = gcp_struct[i].delta;
+        resptr[num_residuals].across_track_residual = valpha;
+        resptr[num_residuals].along_track_residual = vbeta;
+        resptr[num_residuals].residual_x = gcp_struct[i].residual_x;
+        resptr[num_residuals].residual_y = gcp_struct[i].residual_y;
+        strcpy(resptr[num_residuals].gcp_source, gcp_struct[i].chip_source);
+
+        /* Add this point to the RMS results if it is not an outlier */
+        if (resptr[num_residuals].outlier_flag > 0)
+        {
+            numvalid++;
+            rms[0] += resptr[num_residuals].residual_x
+                * resptr[num_residuals].residual_x;
+            rms[1] += resptr[num_residuals].residual_y
+                * resptr[num_residuals].residual_y;
+        }
+        num_residuals++;
+    }
+
+    /* Write out the residual information */
+    report_header = ias_misc_initialize_gps_report_header(get_l1g_filename(),
+            get_l0r_filename(), get_work_order_id(), "CORRECT_LOS_MODEL");
+    if (report_header == NULL)
+    {
+        IAS_LOG_ERROR("Initializing GPS report header");
+        return ERROR;
+    }
+
+    status = ias_misc_write_gcp_residuals(file_pointer, num_residuals, iter,
+            resptr, report_header);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing residual information");
+        ias_misc_free_report_header(report_header);
+        return ERROR;
+    }
+
+    /* Release the report header memory allocated by that library */
+    ias_misc_free_report_header(report_header);
+    report_header = NULL;
+
+    /* Close out the RMS residual computation */
+    if (numvalid > 0)
+    {
+        rms[0] = sqrt(rms[0]/(double)numvalid);
+        rms[1] = sqrt(rms[1]/(double)numvalid);
+    }
+
+    return SUCCESS;
+}
+
+/**************************************************************************
+NAME:    write_init
+
+PURPOSE: Allocate memory for the residual file pointer
+
+RETURNS: SUCCESS or ERROR
+***************************************************************************/
+int write_init
+(
+    int num_gcp  /* I: Number of GCP structures to allocate */
+)
+{
+    resptr = malloc(num_gcp * sizeof(IAS_MISC_GCP_RESIDUAL));
+    if (resptr == NULL)
+    {
+        IAS_LOG_ERROR("Allocating memory for GCP structures");
+        return ERROR;
+    }
+    else
+    {
+        return SUCCESS;
+    }
+}
+
+/**************************************************************************
+NAME:    write_free
+
+PURPOSE: Free memory for the residual file pointer
+
+RETURNS: none
+***************************************************************************/
+void write_free(void)
+{
+    free(resptr);
+}

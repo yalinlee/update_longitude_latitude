@@ -1,0 +1,103 @@
+/******************************************************************************
+NAME:           setup_partial_coefficients
+
+PURPOSE:        Compose the partial coefficients matrix of the observation
+                equation, given the scan angle delta for one GCP;
+
+RETURNS:
+SUCCESS  Partial coefficients found successfully
+ERROR    An error occurred, no coefficients found
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int setup_partial_coefficients
+(
+    PARAM_FLAG param_flag,  /* I: Option flag for parameterization */
+    int est_time_flag,      /* I: Option flag for estimating time rate or not
+                                  1: estimate the rate
+                                  0: not to estimate the rates */
+    double delta,           /* I: Across-track angle for image point
+                                  (radians) */
+    double diff_time,       /* I: Time increment from the reference time epoch
+                                  to the GCP sensed time (seconds) */
+    double radius,          /* I: Radius of the Earth (meters) */
+    double height,          /* I: Height of satellite (meters) */
+    const IAS_VECTOR *satatt,/* I: Spacecraft roll-pitch-yaw angles (radians) */
+    double H1[NPARMS],      /* O: Partial coefficients for alpha WRT
+                                  corrections */
+    double H2[NPARMS]       /* O: Partial coefficients for beta WRT
+                                  corrections */
+)
+{
+    int i, j;           /* Looping variables */
+    int status;
+
+    /* Initialize the partial coefficients arrays */
+    for(i = 0; i < NPARMS; i++)
+    {
+        H1[i] = 0.0;
+        H2[i] = 0.0;
+    }
+
+    /* Calculate partial coefficients for attitude and ephemeris corrections */
+    switch (param_flag)
+    {
+        case EPH_YAW:
+            /* Estimate dx, dy, dz and yaw */
+            status = calc_partial_coeffs_with_ephemeris(delta, radius, height,
+                    H1, H2);
+            if (status != SUCCESS) 
+            {
+                IAS_LOG_ERROR("Estimating deltas and yaw");
+                return ERROR;
+            }
+            break;
+        case BOTH:
+        case WEIGHT:
+            /* Estimate all attitude and ephemeris */
+            status = calc_partial_coeffs_with_attitude_and_ephemeris(delta,
+                    radius, height, satatt, H1, H2);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Estimating all attitude and ephemeris");
+                return ERROR;
+            }
+            break;
+        case ATT_ORB:
+        default:
+            /* Estimate roll, pitch, and yaw */
+            status = calc_partial_coeffs_with_attitude(delta, radius, height,
+                    satatt, H1, H2);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Calculating the partial coefficients for "
+                    "attitude and ephemeris corrections");
+                return ERROR;
+            }
+            break;
+    }     
+
+    /* Calculate partial coefficients for rate parameters */
+    if (est_time_flag == 1)
+    {
+        int half_parms = NPARMS / 2;
+        for(i = half_parms; i < NPARMS; i++)
+        {
+            j = i - half_parms;
+            /* Alpha WRT rate parameters */
+            H1[i] = H1[j] * diff_time;
+            /* Beta WRT rate parameters */
+            H2[i] = H2[j] * diff_time;
+        }
+    }
+
+    return SUCCESS;
+}

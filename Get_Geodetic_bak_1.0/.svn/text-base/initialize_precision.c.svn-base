@@ -1,0 +1,212 @@
+/******************************************************************************
+NAME:     initialize_precision
+
+PURPOSE:  Initialize the normal matrix for attitude and ephemerides
+          correction estimate by least-square solutions;
+
+RETURNS:  SUCCESS or ERROR
+*******************************************************************************
+                       Property of the U.S. Government
+                            USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+/* Huge and Tiny variables defined as initial values for further processing */
+#define HUGE_NUM_VAL 1.0e+20
+#define TINY_NUM_VAL 1.0e-20
+
+int initialize_precision
+(
+    PARAM_FLAG param_flag,  /* I: Option flag for parameterization:
+        "att_orb": estimate attitude plus dz
+        "eph_yaw": estimate ephemeris plus yaw
+        "both": estimate ephemeris and attitude
+        "weight": estimate both with MINQUE and
+        MLHE weight factor estimation */
+    int est_time_flag,      /* I: Option flag for estimating time rate
+                                  1: estimate rate of attitude and ephemeris 
+                                  0: do not estimate the rate */
+    const PRECISION_CORRECTIONS *precision_corr,
+                            /* I: Structure of precision correction and
+                                  a priori information */
+    const double tot_Yb[NPARMS],  /* I: Current net correction parameters */
+    NORMAL_STRUCT *normal   /* O: Structure of normal equation information */
+)
+{
+    int i, j;       /* Looping variables */
+
+    for (i = 0; i < NPARMS; i++)
+    {
+        /* Initialize the observational part of the normal equation */
+        for(j = 0; j < NPARMS; j++)
+            normal->obs_mx[i][j] = 0.0;
+        normal->obs_rgt[i] = 0.0;
+
+        /* Initialize the a priori information part of the normal equation.
+           They are initialized to the smallest mean, 0, and an extremely
+           small number. */
+        /* Default zero mean */
+        normal->apr_corr[i] = 0.0;
+        /* Default tiny weight */
+        normal->apr_wgt_par[i] = TINY_NUM_VAL;
+    }                                       
+
+    /* Fill in the values for the a priori weight and correction */
+    switch (param_flag)
+    {
+        /* Form the a priori normal equation for Options both and weight
+           according to input information */
+        case BOTH:
+        case WEIGHT:
+            /* Check for divide by zero error */
+            for (i = 0; i < AEPARMS; i++)
+            {
+                if (precision_corr->apri_att_sigma[i] == 0.0)
+                {
+                    IAS_LOG_ERROR("Attempting to divide by zero: attitude "
+                        "sigma");
+                    return ERROR;
+                }
+                else if (precision_corr->apri_eph_sigma[i] == 0.0)
+                {
+                    IAS_LOG_ERROR("Attempting to divide by zero: ephemeris "
+                        "sigma");
+                    return ERROR;
+                }
+            }
+
+            /* Form the a priori normal matrix for the across track (alpha)
+               parameters */
+            normal->apr_wgt_par[0] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[0]
+                        * precision_corr->apri_att_sigma[0]);
+            normal->apr_wgt_par[4] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[1]
+                        * precision_corr->apri_eph_sigma[1]);
+            normal->apr_wgt_par[5] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[2]
+                        * precision_corr->apri_eph_sigma[2]);
+            normal->apr_wgt_par[6] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[3]
+                        * precision_corr->apri_att_sigma[3]);
+            normal->apr_wgt_par[10] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[4]
+                        * precision_corr->apri_eph_sigma[4]);
+            normal->apr_wgt_par[11] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[5]
+                        * precision_corr->apri_eph_sigma[5]);
+
+            /* Form the a priori right-side term for the across track (alpha)
+               parameters.  tot_Yb terms subracted from right hand side to
+               restrain net correction */
+            /* Roll */
+            normal->apr_corr[0] = normal->apr_wgt_par[0]
+                * (precision_corr->apri_att_mean[0] - tot_Yb[0]);
+            /* dy */
+            normal->apr_corr[4] = normal->apr_wgt_par[4]
+                * (precision_corr->apri_eph_mean[1] - tot_Yb[4]);
+            /* dz */
+            normal->apr_corr[5] = normal->apr_wgt_par[5]
+                * (precision_corr->apri_eph_mean[2] - tot_Yb[5]);
+            /* Roll rate */
+            normal->apr_corr[6] = normal->apr_wgt_par[6]
+                * (precision_corr->apri_att_mean[3] - tot_Yb[6]);
+            /* dy rate */
+            normal->apr_corr[10] = normal->apr_wgt_par[10]
+                * (precision_corr->apri_eph_mean[4] - tot_Yb[10]);
+            /* dz rate */
+            normal->apr_corr[11] = normal->apr_wgt_par[11]
+                * (precision_corr->apri_eph_mean[5] - tot_Yb[11]);
+
+            /* Form the a priori normal matrix for the along track (beta)
+               parameters */
+            normal->apr_wgt_par[3] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[0]
+                        * precision_corr->apri_eph_sigma[0]);
+            normal->apr_wgt_par[1] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[1]
+                        * precision_corr->apri_att_sigma[1]);
+            normal->apr_wgt_par[2] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[2]
+                        * precision_corr->apri_att_sigma[2]);
+            normal->apr_wgt_par[9] = normal->apr_wgt_fact
+                / (precision_corr->apri_eph_sigma[3]
+                        * precision_corr->apri_eph_sigma[3]);
+            normal->apr_wgt_par[7] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[4]
+                        * precision_corr->apri_att_sigma[4]);
+            normal->apr_wgt_par[8] = normal->apr_wgt_fact
+                / (precision_corr->apri_att_sigma[5]
+                        * precision_corr->apri_att_sigma[5]);
+
+            /* Form the a priori right-side term for the along track (beta)
+               parameters.  tot_Yb terms subtracted from right hand side to
+               restrain net correction */
+            /* dx */
+            normal->apr_corr[3] = normal->apr_wgt_par[3]
+                * (precision_corr->apri_eph_mean[0] - tot_Yb[3]);
+            /* Pitch */
+            normal->apr_corr[1] = normal->apr_wgt_par[1]
+                * (precision_corr->apri_att_mean[1] - tot_Yb[1]);
+            /* Yaw */
+            normal->apr_corr[2] = normal->apr_wgt_par[2]
+                * (precision_corr->apri_att_mean[2] - tot_Yb[2]);
+            /* dx rate */
+            normal->apr_corr[9] = normal->apr_wgt_par[9]
+                * (precision_corr->apri_eph_mean[3] - tot_Yb[9]);
+            /* Pitch rate */
+            normal->apr_corr[7] = normal->apr_wgt_par[7]
+                * (precision_corr->apri_att_mean[4] - tot_Yb[7]);
+            /* Yaw rate */
+            normal->apr_corr[8] = normal->apr_wgt_par[8]
+                * (precision_corr->apri_att_mean[5] - tot_Yb[8]);
+            break;
+
+            /* Block out unwanted parameters for Option 1 and 2 */
+        case EPH_YAW:
+            /* Case eph_yaw: estimate orbit correction */
+
+            /* Huge a priori weight for roll */
+            normal->apr_wgt_par[0] = HUGE_NUM_VAL;
+            /* Huge weight for roll dot */
+            normal->apr_wgt_par[6] = HUGE_NUM_VAL;
+            /* Huge a priori weight for pitch */
+            normal->apr_wgt_par[1] = HUGE_NUM_VAL;
+            /* Huge weight for pitch dot */
+            normal->apr_wgt_par[7] = HUGE_NUM_VAL;
+            break;
+        default:
+            /* Case att_orb: estimate attitude correction */
+
+            /* Huge a priori weight for dy */
+            normal->apr_wgt_par[4] = HUGE_NUM_VAL;
+            /* Huge a priori weight for dy dot */
+            normal->apr_wgt_par[10] = HUGE_NUM_VAL;
+            /* Set huge a priori weight for dx */
+            normal->apr_wgt_par[3] = HUGE_NUM_VAL;
+            /* Huge a priori weight for dx dot */
+            normal->apr_wgt_par[9] = HUGE_NUM_VAL;
+            break;
+    }
+
+    /* Block out the rate terms by taking huge weight for zero a priori mean */
+    if (est_time_flag == 0)
+    {
+        for(i = AEPARMS; i < NPARMS; i++)
+        {
+            normal->apr_corr[i] = 0.0;
+            normal->apr_wgt_par[i] = HUGE_NUM_VAL;
+        }
+    }
+
+    /* Initialize the number of observations */
+    normal->obs_num = 0.0;
+
+    /* Initialize weighted residual square summation */
+    normal->obs_vwv = 0.0;
+
+    return SUCCESS;
+}

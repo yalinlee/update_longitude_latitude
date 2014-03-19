@@ -1,0 +1,92 @@
+#ifndef DATABASE_STRUCTURES_H
+#define DATABASE_STRUCTURES_H
+
+/* This structure contains arrays of the GCP points that were used in the
+   precision solution.  They are set up as arrays of the individual members
+   for use by the database storage routines which can't use an array of GCP
+   structures.  The two character pointer arrays have been allocated as one
+   large block of memory, again for the database storage routines.  The
+   point_id is sized as IAS_GCP_ID_SIZE * number_of_gcps and the gcp_source
+   is IAS_GCP_SOURCE_SIZE * number_of_gcps. */
+typedef struct gcp_char_data
+{
+    char geometric_wo_common_id[IAS_CHAR_ID_SIZE];  
+    char *point_id;
+    char *gcp_source;
+    /* The following three members describe the reference time of the GCP,
+       the year, day of year and seconds of day. */
+    int *gcp_time_year;
+    int *gcp_time_day;
+    double *gcp_time_seconds;
+    double *ephem_x;
+    double *ephem_y;
+    double *ephem_z;
+    double *ephem_xrate;
+    double *ephem_yrate;
+    double *ephem_zrate;
+    double *roll;
+    double *pitch;
+    double *yaw;
+    double *true_gcp_lat;
+    double *true_gcp_lon;
+    double *true_gcp_height;
+    double *apparent_gcp_lat;
+    double *apparent_gcp_lon;
+    double *apparent_gcp_height;
+} GCP_CHAR_DATA;
+    
+typedef struct alignment_char_data
+{
+    char geometric_wo_common_id[IAS_CHAR_ID_SIZE];  
+    char gcp_source[9];
+    int nbr_gcps_used;
+    double outlier_threshold;
+    double rms_gcp_fit;
+    int reference_year;
+    int reference_day;
+    double reference_time;
+    double align_angle_roll;
+    double align_angle_pitch;
+    double align_angle_yaw;
+    double pos_bias_x;
+    double pos_bias_y;
+    double pos_bias_z;
+    double roll_roll_cov;
+    double roll_pitch_cov;
+    double roll_yaw_cov;
+    double roll_xpos_cov;
+    double roll_ypos_cov;
+    double roll_zpos_cov;
+    double pitch_roll_cov;
+    double pitch_pitch_cov;
+    double pitch_yaw_cov;
+    double pitch_xpos_cov;
+    double pitch_ypos_cov;
+    double pitch_zpos_cov;
+    double yaw_roll_cov;
+    double yaw_pitch_cov;
+    double yaw_yaw_cov;
+    double yaw_xpos_cov;
+    double yaw_ypos_cov;
+    double yaw_zpos_cov;
+    double xpos_roll_cov;
+    double xpos_pitch_cov;
+    double xpos_yaw_cov;
+    double xpos_xpos_cov;
+    double xpos_ypos_cov;
+    double xpos_zpos_cov;
+    double ypos_roll_cov;
+    double ypos_pitch_cov;
+    double ypos_yaw_cov;
+    double ypos_xpos_cov;
+    double ypos_ypos_cov;
+    double ypos_zpos_cov;
+    double zpos_roll_cov;
+    double zpos_pitch_cov;
+    double zpos_yaw_cov;
+    double zpos_xpos_cov;
+    double zpos_ypos_cov;
+    double zpos_zpos_cov;
+} ALIGNMENT_CHAR_DATA;
+
+#endif

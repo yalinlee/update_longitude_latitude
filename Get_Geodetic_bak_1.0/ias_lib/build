@@ -1,0 +1,3 @@
+#!/bin/sh
+
+make headers && gmake -j4 install

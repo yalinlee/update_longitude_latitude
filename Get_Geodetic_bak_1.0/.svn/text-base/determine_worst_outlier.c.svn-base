@@ -1,0 +1,181 @@
+/******************************************************************************
+NAME:           determine_worst_outlier
+
+PURPOSE:        Detect GCP outliers using the residuals and normal eqns.
+                This function updates the GCP structure of the worst point.
+
+RETURN VALUE:
+SUCCESS         Successfully detected the outlier status
+ERROR           Did not complete outlier detection process
+
+Note:  This routine finds the worst point.  new_outliers is set to one if
+any outliers are found and zero if no outliers are found.
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_math.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int determine_worst_outlier
+(
+    double threshold,               /* I: Outlier probability threshold */
+    int n_parm,                     /* I: Number of parameters in solution */
+    int num_gcp,                    /* I: Number GCPs used in the correction
+                                          solution */
+    double cov_mx[NPARMS][NPARMS],  /* I: Inverse of normal equation matrices */
+    const double post_sig,          /* I: Standard deviation of unit weight
+                                          estimates */
+    const double apr_observe_sig[2],/* I: A priori std dev of an observation */
+    GCP_STRUCT gcp_struct[],        /* I/O: Structure of GCP information
+                                            updated for the outlier flag */
+    int *new_outliers               /* O: Number of new outliers for this
+                                          iteration */
+)
+{
+    double rejection_threshold;   /* Outlier rejection threshold */
+    double max_res;     /* Maximum residual */
+    double sigma[2];    /* Observation standard deviations */
+    double weight[2];   /* Observation relative merit factors */
+    double z;           /* Normalized residual */
+    int max_pt;         /* GCP number with the largest residual */
+    int dof;            /* Degrees of freedom in the solution */
+    int i, j, k;        /* Looping variables */
+    double sqrt_post_sig; /* cached value for efficiency */
+
+    /* Compute the t distribution outlier threshold */
+    /* The number of degrees of freedom is the number of GCPs minus the
+       number of parameters minus the number of outliers */
+    dof = 2 * num_gcp - n_parm;
+
+    for(i = 0; i < num_gcp; i++)
+    {
+        if (gcp_struct[i].accept_flag != GOOD_POINT)
+            dof -= 2;
+    }
+
+    if (dof < 1)
+        dof = 1;
+
+    rejection_threshold = ias_math_compute_t_confidence(threshold, dof);
+
+    /* Initialize statistics.
+       Test against taking the sqare root of a negative number. Also
+       tested to see if post_sig equals 0 to avoid division by zero later */
+    if (post_sig <= 0)
+    {
+        IAS_LOG_ERROR("Attempting to take square root of negative number");
+        return ERROR;
+    }
+
+    sqrt_post_sig = sqrt(post_sig);
+
+    sigma[0] = apr_observe_sig[0] * sqrt_post_sig;
+    if (sigma[0] < apr_observe_sig[0])
+        sigma[0] = apr_observe_sig[0]; 
+    sigma[1] = apr_observe_sig[1] * sqrt_post_sig;
+    if (sigma[1] < apr_observe_sig[1])
+        sigma[1] = apr_observe_sig[1];
+    max_res = 0.0;
+    max_pt = -1;
+
+    /* Test for possible division by zero and negative values. Sigma is not
+       tested since inherently it can not be zero */
+    if ((apr_observe_sig[0] <= 0.0) || (apr_observe_sig[1] <= 0.0)
+            || (dof == 0))
+    {
+        IAS_LOG_ERROR("Attempting to divide by zero: a priori standard "
+            "deviation of observation");
+        return ERROR;
+    }
+
+    /* Loop over all GCPs */
+    for(i = 0; i < num_gcp; i++)
+    {
+        if (gcp_struct[i].accept_flag == GOOD_POINT)
+        {
+            /* Compute observation figure of merit from partial derivatives and
+               inverse of normal equations */
+            weight[0] = 0.0;
+            weight[1] = 0.0;
+
+            for (j = 0; j < NPARMS; j++)
+            {
+                for (k = 0; k < NPARMS; k++)
+                {
+                    weight[0] += gcp_struct[i].apd[j] * gcp_struct[i].apd[k]
+                        * cov_mx[j][k];
+                    weight[1] += gcp_struct[i].bpd[j] * gcp_struct[i].bpd[k]
+                        * cov_mx[j][k];
+                }
+            }
+
+            weight[0] /= (apr_observe_sig[0]*apr_observe_sig[0]);
+            weight[1] /= (apr_observe_sig[1]*apr_observe_sig[1]);
+
+            /* New formulation */
+            z = fabs(gcp_struct[i].alpha/sigma[0]);
+
+            /* Test for square root of neg. */
+            if ((weight[0] <= -1.0) || (weight[1] <= -1.0))
+            {
+                IAS_LOG_ERROR("Attempting to take the square root of a "
+                    "negative number: observation relative merit factors");
+                return ERROR;
+            }
+
+            if (z * z < (double) dof)
+            {
+                z *= sqrt((double)(dof - 1) / (((double)dof - z * z)
+                            * (1.0 + weight[0])));
+            }
+            else
+            {
+                z /= sqrt(1.0 + weight[0]);
+            }
+
+            if (z > max_res)
+            {
+                max_res = z;
+                max_pt = i;
+            }
+
+            z = fabs(gcp_struct[i].beta/sigma[1]);
+
+            if (z * z < (double) dof)
+            {
+                z *= sqrt((double)(dof - 1) / (((double)dof - z * z)
+                            * (1.0 + weight[1])));
+            }
+            else
+            {
+                z /= sqrt(1.0 + weight[1]);
+            }
+
+            if (z > max_res)
+            {
+                max_res = z;
+                max_pt = i;
+            }
+        }
+    }
+
+    /* Determine if the worst point is an outlier.  This only kicks one point
+       out at a time since the worst point can cause good points to appear
+       bad. */
+    if (max_res > rejection_threshold)
+    {
+        *new_outliers = 1;
+        gcp_struct[max_pt].accept_flag = OUTLIER_POINT;
+    }
+    else
+    {
+        *new_outliers = 0;
+    }
+
+    return SUCCESS;
+}

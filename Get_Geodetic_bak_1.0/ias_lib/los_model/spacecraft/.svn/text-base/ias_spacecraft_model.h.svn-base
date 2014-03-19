@@ -1,0 +1,200 @@
+#ifndef IAS_SPACECRAFT_MODEL_H
+#define IAS_SPACECRAFT_MODEL_H
+
+#include "ias_const.h"
+#include "ias_types.h"
+#include "ias_structures.h"
+#include "ias_satellite_attributes.h"
+#include "ias_ancillary_io.h"
+
+#define IAS_PRECISION_MAX_POLY_COEFF 3
+
+#define IAS_EPHEM_SAMPLING_PERIOD 1.0 /* ephemeris sampling (seconds) */
+#define IAS_IRU_SAMPLING_PERIOD   0.02  /* 1.0 or 0.02 (50Hz) */
+
+typedef struct ias_sc_attitude_record
+{
+    double seconds_from_epoch;          /* Seconds from epoch for the set of
+        attitude sample records. First time from epoch is 0 since that time is
+        utc_epoch_time, all other sample records are the attitude time from
+        epoch - so the current attitude sample record time minus epoch to be
+        relative to the epoch time. */
+    IAS_VECTOR satellite_attitude;      /* Roll, pitch, yaw (radians) */
+    IAS_VECTOR precision_attitude;      /* Roll, pitch, yaw (radians) */
+} IAS_SC_ATTITUDE_RECORD;
+
+typedef struct ias_sc_attitude_model
+{
+    double utc_epoch_time[3];        /* Year, day of year, seconds of day for
+        time of first attitude sample record. The seconds_from_epoch values in
+        the attitude sample records are relative to this attitude epoch time. */
+    double nominal_sample_time;      /* Seconds */
+    int sample_count;                /* Number of attitude sample records */
+    IAS_SC_ATTITUDE_RECORD *sample_records; /* Ptr to attitude sample records */
+} IAS_SC_ATTITUDE_MODEL;
+
+typedef struct ias_sc_ephemeris_record
+{
+    double seconds_from_epoch;             /* Seconds from epoch for the set
+        of ephemeris sample records. First time from epoch is 0 since that time
+        is utc_epoch_time, all other sample records are the ephemeris time from
+        epoch - so the current ephemeris sample record time minus epoch to be
+        relative to the epoch time. */
+    IAS_VECTOR eci_position;               /* X, Y, Z (meters) */
+    IAS_VECTOR eci_velocity;               /* Vx, Vy, Vz (meters/sec) */
+    IAS_VECTOR ecef_position;              /* X, Y, Z (meters) */
+    IAS_VECTOR ecef_velocity;              /* Vx, Vy, Vz (meters/sec) */
+    IAS_VECTOR precision_eci_position;     /* X, Y, Z (meters) */
+    IAS_VECTOR precision_eci_velocity;     /* Vx, Vy, Vz (meters/sec) */
+    IAS_VECTOR precision_ecef_position;    /* X, Y, Z (meters) */
+    IAS_VECTOR precision_ecef_velocity;    /* Vx, Vy, Vz (meters/sec) */
+} IAS_SC_EPHEMERIS_RECORD;
+
+typedef struct ias_sc_ephemeris_model
+{
+    double utc_epoch_time[3];        /* Year, day of year, seconds of day for
+        time of first ephemeris sample record. The seconds_from_epoch values in
+        the ephemeris sample records are relative to this ephemeris epoch
+        time. */
+    double nominal_sample_time;      /* Seconds */
+    int sample_count;                /* Number of ephemeris sample records */
+    IAS_SC_EPHEMERIS_RECORD *sample_records;/* Ptr to ephemeris sample records*/
+} IAS_SC_EPHEMERIS_MODEL;
+
+typedef struct ias_sc_precision_model
+{
+    double seconds_from_image_epoch;  /* Seconds from epoch */
+    int ephemeris_order;      /* Number of ephemeris correction coefficients */
+    /* Ephemeris corrections in X/Y/Z directions */
+    double x_corr[IAS_PRECISION_MAX_POLY_COEFF]; /* x_bias (meters),
+                                                    x_rate (meters/second) */
+    double y_corr[IAS_PRECISION_MAX_POLY_COEFF]; /* y_bias (meters),
+                                                    y_rate (meters/second) */
+    double z_corr[IAS_PRECISION_MAX_POLY_COEFF]; /* z_bias (meters),
+                                                    z_rate (meters/second) */
+    int attitude_order;       /* Number of attitude correction coefficients */
+    /* Attitude corrections for roll/pitch/yaw */
+    double roll_corr[IAS_PRECISION_MAX_POLY_COEFF];
+        /* roll_bias (radians),
+           roll_rate (radians/second),
+           roll_acc (radians/second^2) */
+    double pitch_corr[IAS_PRECISION_MAX_POLY_COEFF];
+        /* pitch_bias (radians),
+           pitch_rate (radians/second),
+           pitch_acc (radians/second^2) */
+    double yaw_corr[IAS_PRECISION_MAX_POLY_COEFF];
+        /* yaw_bias (radians),
+           yaw_rate (radians/second),
+           yaw_acc (radians/second^2) */
+} IAS_SC_PRECISION_MODEL;
+
+typedef struct ias_spacecraft_model
+{
+    IAS_SC_ATTITUDE_MODEL attitude;    /* Spacecraft attitude */
+    IAS_SC_EPHEMERIS_MODEL ephemeris;  /* Spacecraft ephemeris */
+    IAS_SC_PRECISION_MODEL precision;  /* Spacecraft precision correction
+                                       factors */
+} IAS_SPACECRAFT_MODEL;
+
+/***************************************************************************
+Function prototypes - alphabetical order (hopefully)
+****************************************************************************/
+
+int ias_sc_model_copy_attitude
+(
+    const IAS_SC_ATTITUDE_MODEL *in_att,    /* I: Input attitude to be copied */
+    IAS_SC_ATTITUDE_MODEL *out_att          /* O: Copy of input attitude data */
+);
+
+int ias_sc_model_correct_attitude
+(
+    const double *image_epoch,  /* I: Image epoch time (year/doy/sod array) */
+    const IAS_SC_PRECISION_MODEL *prec_model,   /* I: Precision parameters */
+    IAS_SC_ATTITUDE_MODEL *att_model            /* IO: Attitude to correct */
+);
+
+int ias_sc_model_correct_ephem_convert_ecef2eci
+(
+    double xp,              /* I: True pole postion in the mean pole coords
+                               system, x-axis */
+    double yp,              /* I: True pole position in the mean pole coords
+                               system, y-axis */
+    double ut1_utc,         /* I: Earth rotation angle difference ut1 - utc */
+    const double *image_epoch, /* I: Image epoch time (year/doy/sod array) */
+    const IAS_SC_PRECISION_MODEL *prec_model,   /* I: Precision parameters */
+    IAS_SC_EPHEMERIS_MODEL *ephem_model         /* IO: Ephemeris to convert */
+);
+
+int ias_sc_model_find_attitude_at_time
+(
+   const IAS_SC_ATTITUDE_MODEL *att,    /* I: Attitude structure */
+   double att_time,                     /* I: Actual time (sec from epoch) */
+   double *roll,                        /* O: Output roll (radians) */
+   double *pitch,                       /* O: Output pitch (radians) */
+   double *yaw                          /* O: Output yaw (radians) */
+);
+
+int ias_sc_model_find_jitter_attitude_at_time
+(
+    const IAS_SC_ATTITUDE_MODEL *att,   /* I: Attitude structure */
+    double seconds_from_epoch,          /* I: Actual time
+                                              (seconds from attitude epoch) */
+    IAS_VECTOR *jit_attitude            /* O: Interpolated roll, pitch, yaw
+                                              (radians) at time */
+);
+
+void ias_sc_model_free_attitude
+(
+    IAS_SC_ATTITUDE_MODEL *att      /* I: Attitude structure to free */
+);
+
+void ias_sc_model_get_position_and_velocity_at_time
+(
+   const IAS_SC_EPHEMERIS_MODEL *eph,/* I: ephemeris structure */
+   IAS_ACQUISITION_TYPE acq_type, /* I: Image acquisition type */
+   double eph_time,         /* I: Delta time from the reference time */
+   IAS_VECTOR *satpos,      /* O: New satellite position at "dtime" */
+   IAS_VECTOR *satvel       /* O: New satellite velocity at "dtime" */
+);
+
+void ias_sc_model_initialize_attitude
+(
+    IAS_SC_ATTITUDE_MODEL *att      /* I: Attitude structure to initialize */
+);
+
+int ias_sc_model_remez_filter_attitude
+(
+    const IAS_SC_ATTITUDE_MODEL *orig_att,  /* I: Original satellite attitude */
+    double cutoff,                          /* I: Low pass filter cutoff
+                                                  frequency */
+    IAS_SC_ATTITUDE_MODEL *low_att          /* O: Attitude after high frequency
+                                                  aspects filtered out */
+);
+
+int ias_sc_model_set_ancillary
+(
+    const IAS_ANC_EPHEMERIS_DATA *anc_ephemeris, /* I: Ancillary ephemeris
+                                                    pointer */
+    const IAS_ANC_ATTITUDE_DATA *anc_attitude,   /* I: Ancillary attitude
+                                                    pointer */
+    IAS_SPACECRAFT_MODEL *sc                     /* O: The spacecraft model
+                                                    containing ancillary
+                                                    ephemeris and attitude */
+);
+
+int ias_sc_model_subtract_attitude
+(
+    const IAS_SC_ATTITUDE_MODEL *in_att1,   /* I: First sequence */
+    const IAS_SC_ATTITUDE_MODEL *in_att2,   /* I: Sequence to subtract */
+    IAS_SC_ATTITUDE_MODEL *out_att          /* O: Result */
+);
+
+int ias_sc_model_transfer_jitter_attitude_bias
+(
+    double start_time,                  /* I: Time to start bias computation */
+    double stop_time,                   /* I: Time to stop bias computation */
+    IAS_SC_ATTITUDE_MODEL *from_att,    /* I/O: Sequence to remove bias from */
+    IAS_SC_ATTITUDE_MODEL *to_att       /* I/O: Sequence to add bias to */
+);
+
+#endif

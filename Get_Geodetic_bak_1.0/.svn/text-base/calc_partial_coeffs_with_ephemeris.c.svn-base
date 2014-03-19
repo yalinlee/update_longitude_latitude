@@ -1,0 +1,76 @@
+/******************************************************************************
+NAME:           calc_partial_coeffs_with_ephemeris
+
+PURPOSE:        Compose the partial coefficients matrix of the observation
+                equation for flag = 2, estimating ephemeris plus yaw;  
+
+RETURN VALUE:
+SUCCESS  Partial coefficients found successfully
+ERROR    An error occurred, no coefficients found
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int calc_partial_coeffs_with_ephemeris
+(
+    double delta,       /* I: Across-track angle for the image point of the GCP
+                              (radians) */
+    double radius,      /* I: Radius of the Earth (meters) */
+    double height,      /* I: Height of satellite (meters) */
+    double H1[NPARMS],  /* O: Array of the partial coefficients for alpha */
+    double H2[NPARMS]   /* O: Array of the partial coefficients for beta */
+)
+{
+    double sindelta, cosdelta;  /* Sine and cosine of delta */
+    double satrad;              /* Radius of satellite position (meters) */
+    double c;                   /* Side perpendicular to look vector */
+    double b, d;                /* Sides in look vector direction */
+    double d_x_cosdelta;        /* Projection of line of sight to height */
+
+    /* Calculate the constants needed for H calculation */
+    sindelta = sin(delta); 
+    cosdelta = cos(delta);
+    satrad = radius + height; 
+    c = satrad * sindelta;
+
+    /* Check for negative sqare root */
+    if (c > radius)
+    {
+        IAS_LOG_ERROR("Attempting square root of a negative number");
+        return ERROR;
+    }
+
+    b = sqrt(radius * radius - c * c);
+
+    d = satrad * cosdelta - b;
+    d_x_cosdelta = d * cosdelta;
+
+    /* Check for division by zero error */
+    if ((d == 0.0) || (satrad == 0.0) || (d_x_cosdelta == 0.0))
+    {
+        IAS_LOG_ERROR("Attempting to divide by zero");
+        return ERROR;
+    }
+
+    /* Compose the H matrix */
+    /* Alpha WRT dy (meter) scaled to micro-radians */
+    H1[4] = b * 1.0e6 / (satrad * d);       
+
+    /* Alpha WRT dz (meter) scaled to micro-radians */
+    H1[5] = -sindelta * 1.0e6 / d;
+
+    /* Beta WRT dx (meter) scaled to micro-radians */
+    H2[3] = (satrad - d_x_cosdelta) * 1.0e6 / (satrad * d_x_cosdelta);
+
+    /* Beta WRT yaw */
+    H2[2] = tan(delta);
+
+    return SUCCESS;
+}

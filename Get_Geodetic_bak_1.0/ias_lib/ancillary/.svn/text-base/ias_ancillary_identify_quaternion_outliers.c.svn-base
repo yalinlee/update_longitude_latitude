@@ -1,0 +1,128 @@
+/**********************************************************************
+Name: ias_ancillary_identify_quaternion_outliers
+
+Purpose: Filter out quaternion outliers
+
+Returns: SUCCESS or ERROR
+***********************************************************************/
+#include <math.h>
+#include <string.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_structures.h"
+#include "ias_math.h"
+#include "ias_cpf.h"
+#include "ias_ancillary_io.h"
+#include "ias_ancillary.h"
+#include "ias_ancillary_private.h"
+
+int ias_ancillary_identify_quaternion_outliers
+(
+    IAS_CPF *cpf,                    /* I: CPF structure */
+    const IAS_L0R_ATTITUDE *l0r_attitude, /* I: L0R quaternion structure */
+    int l0r_attitude_count,          /* I: Number of ACS records in L0Ra */
+    double *quaternion_time_data,    /* O: Array of quaternion times */
+    IAS_QUATERNION *quaternion_data, /* O: Array of valid quaternions */
+    int *valid_quaternion_flag,      /* O: Array of quaternion quality flags */
+    int *valid_quaternion_count      /* O: Number of valid quaternions (quater-
+                                           nion data arrays are this size) */
+)
+{
+    int index;           /* loop variable for the index of the current 
+                            quaternion */
+    double magnitude;    /* magnitude of quaternion */
+
+    const struct IAS_CPF_ANCILLARY_QA_THRESHOLDS *ancil_data;
+    double quaternion_tolerance;
+
+    int valid_quaternion_total;      /* local copy of *valid_quaternion_count */
+    valid_quaternion_total =  *valid_quaternion_count;
+
+#if DEBUG_GENERATE_DATA_FILES == 1
+    /* Only for debugging. */
+    FILE *fp;
+#endif
+
+    /* Read CPF ancillary data */
+    ancil_data = ias_cpf_get_ancil_qa_thresholds(cpf);
+    if (ancil_data == NULL)
+    {
+        IAS_LOG_ERROR("Reading CPF ancillary data");
+        return ERROR;
+    }
+    quaternion_tolerance = 
+        ancil_data->quaternion_normalization_outlier_threshold;
+
+    IAS_LOG_DEBUG("Validate Quaternion attitude and generate outliers");
+
+    IAS_LOG_INFO("Number of attitude quaternion points %d", l0r_attitude_count);
+
+#if DEBUG_GENERATE_DATA_FILES == 1
+    fp = fopen("anc.quat.l0r.dat", "wb");
+#endif
+
+    /* loop through L0R quaternions keeping any whose magnitude falls
+       within the tolerance */
+    for (index = 0, valid_quaternion_total = 0;
+         index < l0r_attitude_count;
+         index++)
+    {
+        /* copy it to the valid quaternion list */
+        quaternion_data[valid_quaternion_total].vector =
+            l0r_attitude[index].inertial_to_body.vector;
+        quaternion_data[valid_quaternion_total].scalar =
+            l0r_attitude[index].inertial_to_body.scalar;
+
+        /* figure out the magnitude */
+        magnitude = ias_math_compute_quaternion_magnitude(
+                        &quaternion_data[valid_quaternion_total]);
+
+        /* set the current time for this quaternion */
+        quaternion_time_data[valid_quaternion_total] =
+            IAS_L0R_CONVERT_TIME_TO_SECONDS_SINCE_J2000(
+                l0r_attitude[index].l0r_time);
+
+        if (fabs(magnitude - 1.0) < quaternion_tolerance)
+        {
+            valid_quaternion_flag[valid_quaternion_total] = 1;
+#if DEBUG_GENERATE_DATA_FILES == 1
+        fprintf(fp,
+                "%d %f    %e -> %f    %e -> %f     %e -> %f    %e -> %f\n",
+                index,
+                quaternion_time_data[valid_quaternion_total],
+                quaternion_data[valid_quaternion_total].vector.x,
+                l0r_attitude[index].inertial_to_body.vector.x,
+                quaternion_data[valid_quaternion_total].vector.y,
+                l0r_attitude[index].inertial_to_body.vector.y,
+                quaternion_data[valid_quaternion_total].vector.z,
+                l0r_attitude[index].inertial_to_body.vector.z,
+                quaternion_data[valid_quaternion_total].scalar,
+                l0r_attitude[index].inertial_to_body.scalar);
+#endif
+        }
+        else
+        {
+            valid_quaternion_flag[valid_quaternion_total] = 0;
+            IAS_LOG_DEBUG("Invalid Quaternion - index: %d x:%f y:%f z:%f "
+                    "scalar:%f -> magnitude: %f", index,
+                    quaternion_data[valid_quaternion_total].vector.x,
+                    quaternion_data[valid_quaternion_total].vector.y,
+                    quaternion_data[valid_quaternion_total].vector.z,
+                    quaternion_data[valid_quaternion_total].scalar,
+                    magnitude);
+        }
+        valid_quaternion_total++;
+    }
+
+    IAS_LOG_DEBUG("Number of valid quaternion points %d",
+                  valid_quaternion_total);
+
+#if DEBUG_GENERATE_DATA_FILES == 1
+    fclose(fp);
+#endif
+
+    /* reassign local value back to output parameter */
+    *valid_quaternion_count = valid_quaternion_total;
+
+    return SUCCESS;
+}

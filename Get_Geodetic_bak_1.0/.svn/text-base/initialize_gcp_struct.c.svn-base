@@ -1,0 +1,171 @@
+/*---------------------------------------------------------------------------
+NAME:    initialize_gcp_struct.c
+
+PURPOSE: Populates the GCP structure with data from the GCP data and
+         optionally from the DEM (if the terrain flag is set).  If the
+         terrain flag is set and an error occurs reading the DEM, the
+         terrain flag is unset.
+
+RETURNS: SUCCESS or ERROR
+----------------------------------------------------------------------------*/
+#include <stdlib.h>
+#include <string.h>
+#include "ias_types.h"
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_satellite_attributes.h"
+#include "ias_miscellaneous.h"
+#include "ias_l1g.h"
+#include "ias_gcp.h"
+#include "correct_los_model.h"
+
+int initialize_gcp_struct
+(
+    const IAS_GCP_RESULTS *gcp_data,  /* I: GCP data records */
+    int number_gcp,             /* I: Number of GCP data records */
+    L1GIO *l1g_file,            /* I: L1G info structure for the image */
+    GCP_STRUCT **gcp_struct     /* O: GCP structure for model correction */
+)
+{
+    int i;
+    double dem_elev = 0.0;
+    int status;
+    IAS_IMAGE dem_image;
+    int local_terrain_flag;
+    int band_index;
+    IAS_DATA_TYPE data_type;
+    int number_of_scas;
+    int line_count;
+    int sample_count;
+    IAS_L1G_BAND_METADATA band_metadata;
+    IAS_CORNERS image_corners;
+
+
+    band_index = ias_sat_attr_convert_band_number_to_index(
+            gcp_data[0].search_band);
+    if ( band_index == ERROR )
+    {
+        IAS_LOG_ERROR("Converting band number %d to index",
+            gcp_data[0].search_band );
+        return ERROR;
+    }
+
+    /* Get the lines and samples from the L1G */
+    status = ias_l1g_get_band_size( l1g_file, gcp_data[0].search_band,
+        &data_type, &number_of_scas, &line_count, &sample_count );
+    if ( status != SUCCESS )
+    {
+        IAS_LOG_ERROR("Getting band size from L1G file");
+        return ERROR;
+    }
+
+    /* Get the corners and pixsize from the L1G metadata */
+    status = ias_l1g_get_band_metadata( l1g_file, gcp_data[0].search_band,
+        &band_metadata );
+    if ( status != SUCCESS )
+    {
+        IAS_LOG_ERROR("Getting band metadata for band %d",
+            gcp_data[0].search_band );
+    }
+
+    /* Get the corner points out of the band metadata */
+    image_corners.upleft.x = band_metadata.upper_left_x;
+    image_corners.upleft.y = band_metadata.upper_left_y;
+    image_corners.upright.x = band_metadata.upper_right_x;
+    image_corners.upright.y = band_metadata.upper_right_y;
+    image_corners.loleft.x = band_metadata.lower_left_x;
+    image_corners.loleft.y = band_metadata.lower_left_y;
+    image_corners.loright.x = band_metadata.lower_right_x;
+    image_corners.loright.y = band_metadata.lower_right_y;
+
+    memset(&dem_image, 0, sizeof(dem_image));
+
+    /* Get a local copy of the terrain flag since it will be accessed
+       in a loop */
+    local_terrain_flag = get_terrain_flag();
+
+    if (local_terrain_flag)
+    {
+        /* Get the DEM image */
+        status = ias_misc_read_dem((const char *)get_dem_filename(),
+                &image_corners,
+                line_count,
+                sample_count,
+                band_metadata.projection_distance_y,
+                &dem_image);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Reading the DEM image file: %s", get_dem_filename());
+            set_terrain_flag(0);
+        }
+    }
+
+    /* Allocate memory for the GCP struct */
+    *gcp_struct = malloc(number_gcp * sizeof(GCP_STRUCT));
+    if (*gcp_struct == NULL)
+    {
+        IAS_LOG_ERROR("Allocating memory for the gcp_struct");
+        /* Release DEM if allocated */
+        if (local_terrain_flag)
+            free(dem_image.data);
+        return ERROR;
+    }
+
+    /* Assign GCP structure from the gcp data structure */
+    for (i = 0; i < number_gcp; i++)
+    {
+        GCP_STRUCT *gcp_struct_ptr = &(*gcp_struct)[i];
+        const IAS_GCP_RESULTS *gcp_data_ptr = &gcp_data[i];
+
+        strcpy(gcp_struct_ptr->point_id, gcp_data_ptr->point_id);
+        gcp_struct_ptr->band_number = gcp_data_ptr->search_band;
+        gcp_struct_ptr->gcp_position.x = gcp_data_ptr->gcp_position.x;
+        gcp_struct_ptr->gcp_position.y = gcp_data_ptr->gcp_position.y;
+        gcp_struct_ptr->gcp_position.z = gcp_data_ptr->gcp_position.z;
+        gcp_struct_ptr->latitude = gcp_data_ptr->latitude;
+        gcp_struct_ptr->longitude = gcp_data_ptr->longitude;
+        gcp_struct_ptr->elevation = gcp_data_ptr->elevation;
+        gcp_struct_ptr->accept_flag = gcp_data_ptr->accept_flag;
+        strcpy(gcp_struct_ptr->chip_source, gcp_data_ptr->chip_source);
+
+        /* Find the 1G line and sample with the predicted line/sample and 
+           the offsets */
+        gcp_struct_ptr->x1Gline = gcp_data_ptr->predicted_search_line
+            + gcp_data_ptr->fit_line_offset;
+        gcp_struct_ptr->x1Gsamp = gcp_data_ptr->predicted_search_sample
+            + gcp_data_ptr->fit_sample_offset;
+
+        /* Use the measured L1Gt line/sample location to get the corresponding
+           DEM elevation to populate the dem_elevation field */
+        if (local_terrain_flag)
+        {
+            /* Get the elevation */
+            status = ias_misc_read_elevation_at_line_sample(&dem_image,
+                    gcp_struct_ptr->x1Gline, gcp_struct_ptr->x1Gsamp,
+                    band_metadata.projection_distance_y,
+                    band_metadata.projection_distance_x,
+                    &dem_elev);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Getting DEM elevation for line %f sample %f",
+                    gcp_struct_ptr->x1Gline, gcp_struct_ptr->x1Gsamp);
+                free(dem_image.data);
+                return ERROR;
+            }
+        }
+
+        /* Set the elevation */
+        gcp_struct_ptr->dem_elevation = dem_elev;
+
+        /* Assign the predicted line and sample to be transfered to the
+           residual file */
+        gcp_struct_ptr->pred_line = gcp_data_ptr->predicted_search_line;
+        gcp_struct_ptr->pred_samp = gcp_data_ptr->predicted_search_sample;
+    }  /* END for each GCP loop */
+
+    /* Release DEM if allocated */
+    if (local_terrain_flag)
+        free(dem_image.data);
+
+    return SUCCESS;
+}  /* END initialize_gcp_struct */

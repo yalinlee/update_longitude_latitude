@@ -1,0 +1,585 @@
+#ifndef CORRECT_LOS_MODEL_H
+#define CORRECT_LOS_MODEL_H
+
+#include "ias_l1g.h"
+#include "ias_los_model.h"
+#include "ias_misc_gcp_residuals.h"
+#include "ias_geo.h"
+#include "gcp_struct.h"
+#include "database_structures.h"
+
+/* Define enumerated types for the flags
+---------------------------------------*/
+typedef enum
+{
+    ATT_ORB = 0,        /* Estimate attitude plus orbital height correction */
+    EPH_YAW,            /* Estimate ephemeris plus yaw attitude correction */
+    BOTH,               /* Estimate both attitude and ephemeris corrections */
+    WEIGHT,             /* Estimate both corrections using weight factors */
+    NUMBER_PARM_FLAGS
+} PARAM_FLAG;
+
+/* Precision correction information
+------------------------------------*/
+typedef struct
+{
+    IAS_VECTOR satpos;             /* Satellite position and velocity     */
+    IAS_VECTOR satvel;             /*   correction at time, in s/c system */
+    IAS_VECTOR rpyangle;           /* Satellite attitude and its rate     */
+    IAS_VECTOR rpyrate;            /*   correction at time, in s/c system */
+    double time;                   /* Reference time for corrections */
+    double cov[12][12];            /* Covariance matrix for parameters */
+    double apri_eph_mean[6];       /* A priori value and sigma of the    */
+    double apri_eph_sigma[6];      /*   ephemeris correction parameters */
+    double apri_att_mean[6];       /* A priori value and sigma of the   */
+    double apri_att_sigma[6];      /*   attitude correction parameters */
+    double rms_prefit[2];          /* Prefit RMS residuals quality metric; */ 
+                                   /*   slot 0 is X, slot 1 is Y using */
+                                   /*   projection space ground distance */
+    double rms_postfit[2];         /* Postfit RMS residuals quality metric; */
+                                   /*   slot 0 is X, slot 1 is Y using */
+                                   /*   projection space ground distance */
+    int num_valid_gcp;             /* Number of valid GCPs */
+} PRECISION_CORRECTIONS;
+
+typedef struct normal_struct
+{
+    double obs_mx[12][12];
+    double obs_rgt[12];
+    double apr_corr[12];
+    double apr_wgt_par[12];
+    double obs_num;
+    double obs_wgt[2];
+    double apr_wgt_fact;
+    double obs_vwv;
+} NORMAL_STRUCT;
+
+/* -------------------- Routine prototypes -------------------- */
+void accum_normal_equation
+(
+    const double H[],   /* I: One row vector of partial coefficients */
+    double obs,         /* I: Observation--angle differences in micro radian */
+    int num_params,     /* I: Number of parameters in the problem, or
+                              dimension of H */
+    double obs_wgt,     /* I: Weight for observation obs */
+    double **norm_mx,   /* I/O: The n x n normal matrix updated by accumulating 
+                                H_transpose * obs_wgt * H */
+    double obs_rgt[]    /* I/O: n x 1 right-hand-side array of the normal
+                                equation updated by adding
+                                H_transpose * obs_wgt * obs */
+);
+
+int add_position
+(
+    const IAS_LOS_MODEL *model, /* I: The OLI model structure */
+    double x1R_line,            /* I: Input search line */
+    double x1R_samp,            /* I: Input search sample */
+    int band_index,             /* I: Band index with line/sample */
+    int x1R_sca,                /* I: SCA number with line/sample */
+    double *vector_y,           /* I: Vector of y search space */
+    double *vector_x,           /* I: Vector of x search space */
+    double s_major,             /* I: Semi-major axis */
+    double flat,                /* I: Flattening */
+    double tref[3],             /* O: Reference time year,day,seconds */
+    GCP_STRUCT *gcp_struct      /* I/O: GCP structure for precision process */
+);
+
+GCP_CHAR_DATA *allocate_gcp_stats
+(
+    int number_of_gcps  /* I: Number of elements to allocate */
+);
+
+void calc_alignment
+(
+    IAS_SENSOR_LOCATION_MODEL *sensor,      /* I: Sensor location model */
+    PRECISION_CORRECTIONS *precision_corr,  /* I: Precision corrections */
+    const double *ref_time,                 /* I: Precision solution reference
+                                                  time */
+    ALIGNMENT_CHAR_DATA *align_stats        /* O: Alignment information */
+);
+
+int calc_correction
+(
+    PARAM_FLAG param_flag,      /* I: Flag for parameterization option */
+    int est_time_flag,          /* I: Flag for estimating position and
+                                      attitude rates */
+    double ref_time,            /* I: Reference time for the correction (when
+                                      rate is estimated) in seconds */
+    int num_gcp,                /* I: Number of GCPs */
+    const double apr_observe_sig[],
+                                /* I: A prior observation standard error
+                                      [0] across track [1] along track */
+    const char *rfilename,      /* I: Residual file */
+    int maxiter,                /* I: Maximum number of iterations */
+    double threshold,           /* I: Outlier probability threshold */
+    double radius,              /* I: Radius of the Earth in meters */
+    double height,              /* I: Height of satellite in meters */
+    IAS_LOS_MODEL *model,       /* I: OLI model */
+    GCP_STRUCT gcp_struct[],    /* I/O: Structures containing GCP information */
+    PRECISION_CORRECTIONS *precision_corr,
+                                /* O: Precision corrections */
+    double *post_sig,           /* O: Posterior noise level sigma */
+    int *sufficient_gcps_found_flag /* O: flag to indicate enough GCPs were
+                                          found for the solution */
+);
+
+void calc_line_of_sight
+(
+    const IAS_VECTOR *pixpos,/* I: Position vector of the point in Earth-fixed
+                                   system, in meters */
+    const IAS_VECTOR *satpos,/* I: Position vector of the satellite at the time
+                                   when the ground point was imaged, in the
+                                   Earth-fixed sytem, in meters */
+    double Tef2oo[3][3],    /* I: 3 X 3 transformation matrix from the
+                                  Earth-fixed system to Orbit-oriented system */
+    double *delta,          /* O: Across-track angle, in radians */
+    double *psi             /* O: Along-track angle, in radians */
+);
+
+int calc_partial_coeffs_with_attitude_and_ephemeris
+(
+    double delta,       /* I: Across-track angle for the image point of the GCP
+                              (radians) */
+    double radius,      /* I: Radius of the Earth (meters) */
+    double height,      /* I: Height of satellite (meters) */
+    const IAS_VECTOR *satatt, /* I: Spacecraft roll-pitch-yaw angles
+                                    (radians) */
+    double H1[NPARMS],  /* O: Array of the partial coefficients for alpha */
+    double H2[NPARMS]   /* O: Array of the partial coefficients for beta */
+);
+
+int calc_partial_coeffs_with_attitude
+(
+    double delta,       /* I: Across-track angle for the image point of the GCP
+                              (radians) */
+    double radius,      /* I: Radius of the Earth (meters) */
+    double height,      /* I: Height of the satellite (meters) */
+    const IAS_VECTOR *satatt, /* I: Spacecraft roll-pitch-yaw angles
+                                    (radians) */
+    double H1[NPARMS],  /* O: Partial coefficients for alpha */
+    double H2[NPARMS]   /* O: Partial coefficients for beta */
+);
+
+int calc_partial_coeffs_with_ephemeris
+(
+    double delta,       /* I: Across-track angle for the image point of the GCP
+                              (radians) */
+    double radius,      /* I: Radius of the Earth (meters) */
+    double height,      /* I: Height of satellite (meters) */
+    double H1[NPARMS],  /* O: Array of the partial coefficients for alpha */
+    double H2[NPARMS]   /* O: Array of the partial coefficients for beta */
+);
+
+int compute_max_likelihood_estimate
+(
+    double obs_num,             /* I: Number of GCP (observation) */  
+    double obs_wss,             /* I: Weighted square sum of the observation */
+    const double **obs_mx,      /* I: The observation part of normal matrix */
+    const double obs_rgt[],     /* I: The observation part of right hand side */
+    const double apr_wgt_par[], /* I: The a priori weights */
+    const double apr_corr[],    /* I: The a priori parameters */
+    int num_parms,              /* I: Number of parameters in estimate vector */
+    double sol_Ya[],            /* I/O: WLS Estimate parameter vector */
+    double **cov_mx,            /* O: Inverse of the normal matrix of the WLS
+                                      problem */
+    double *wgt_fact_obs,       /* O: The estimated variance factor for the
+                                      observation */
+    double *wgt_fact_apr,       /* O: Estimated variance factor for a priori
+                                      variance */
+    double *post_sig            /* O: Weighted residual sum square for
+                                      observation */
+);
+
+int compute_min_quadratic_estimate
+(
+    double obs_num,             /* I: Number of GCPs (observation) */   
+    double obs_vwv,             /* I: Weighted square sum of the observation */
+    const double **obs_mx,      /* I: Observation part of the normal matrix */
+    const double obs_rgt[],     /* I: Observation part of the right hand side */
+    const double apr_wgt_par[], /* I: Diagonal of the a priori weights */
+    const double apr_corr[],    /* I: The a priori parameters */
+    int num_params,             /* I: Number of parameters */
+    double **ptr_cov_mx,        /* I/O: Inverse of WLS problem normal matrix */
+    double sol_Ya[],            /* I/O: WLS estimate parameter vector */
+    double *wgt_fact_obs,       /* O: The estimated variance factor for the
+                                      observation */
+    double *wgt_fact_apr,       /* O: Estimated variance factor for a priori
+                                      variance */
+    double *post_sig            /* O: Posterior noise level sig for scan angle*/
+);
+
+void compute_residual_square_sum
+(
+    const double **obs_mx,      /* I: Normal matrix of the normal equation */
+    const double obs_rgt[],     /* I: Right-hand-side vector of normal equatn */
+    const double sol_Ya[],      /* I: Solution vector for the normal equation */
+    int num_params,             /* I: Number of parameters in solution vector */
+    double *post_sig            /* I/O: Input the square sum of the observation
+                                        and output the residual square sum of
+                                        the observation */
+);
+
+int determine_worst_outlier
+(
+    double threshold,               /* I: Outlier probability threshold */
+    int n_parm,                     /* I: Number of parameters in solution */
+    int num_gcp,                    /* I: Number GCPs used in the correction
+                                          solution */
+    double cov_mx[NPARMS][NPARMS],  /* I: Inverse of normal equation matrices */
+    const double post_sig,          /* I: Standard deviation of unit weight
+                                          estimates */
+    const double apr_observe_sig[2],/* I: A priori std dev of an observation */
+    GCP_STRUCT gcp_struct[],        /* I/O: Structure of GCP information
+                                            updated for the outlier flag */
+    int *new_outliers               /* O: Number of new outliers for this
+                                          iteration */
+);
+
+void determine_precision_success
+(
+    double outlier_fraction,       /* I: Fraction of GCPs that are outliers */
+    const PRECISION_CORRECTIONS *precision_corr, /* I: Precision corrections */
+    const IAS_CPF_GEO_SYSTEM *geo_system, /* I: Geometric thresholds */
+    int *precision_succeeded_flag  /* O: Flag indicating if precision solution
+                                         meets minimum success qualifications */
+);
+
+int disconnect_from_database
+(
+    int commit_flag     /* I: Flag to indicate a commit should be done
+                              1 = commit
+                              0 = rollback */
+);
+
+int finish_processing
+(
+    const char *model_filename,     /* I: Systematic OLI model file name */
+    const char *prec_model_filename,/* I: Precision corrected OLI model file */
+    const char *solution_filename,  /* I: Precision solution file name */
+    const char *l1g_image_name,     /* I: L1G mensuration image file name */
+    const IAS_LOS_MODEL *model,     /* I: Model */
+    const PRECISION_CORRECTIONS *precision_corr,
+                                    /* I: Precision corrections */
+    const double *ref_time,         /* I: Reference time 0:year 1:day 2:sec */
+    ALIGNMENT_CHAR_DATA *align_stats/* I/O: Alignment characterization info */
+);
+
+void free_gcp_stats
+(
+    GCP_CHAR_DATA *gcp_stats    /* I: pointer to structure to free */
+);
+
+void get_correction
+(
+    double ref_time,                /* I: Reference time for the corrections,
+                                          in seconds of day */
+    PARAM_FLAG param_flag,          /* I: Option flag for parameterization:
+        "att_orb": estimate attitude plus height, with rates
+        "eph_yaw": estimate sat position plus yaw, with rates
+        "both": estimate all attitude and ephemeris and rates
+         "weight": estimate both with MINQUE and MLHE weight
+         factor estimation - added by JCS 1/97 */
+    double cov_mx[NPARMS][NPARMS],  /* I: Inverse of normal matrix for alpha
+                                          and beta */
+    double tot_Yb[NPARMS],          /* I: Solution vector */
+    const double post_sig,          /* I: Posteriory sigma for noise level */
+    PRECISION_CORRECTIONS *precision_corr 
+                                    /* O: Structure of precision corrections */
+);
+
+int get_gcp_characterization_data
+(
+    int numgcp,                         /* I: Total number of GCPs */
+    GCP_STRUCT gcp_struct[],            /* I: Full GCP array */
+    const IAS_EARTH_CHARACTERISTICS *earth,/* I: WGS84 Earth model from model */
+    const double ref_time[],            /* I: Precision solution ref time */
+    int *num_valid_gcp,                 /* I/O: Number of valid GCPs */
+    GCP_CHAR_DATA *gcp_stats            /* O: GCP characterization info */
+);
+
+int get_ground_residuals
+(
+    const IAS_LOS_MODEL *model, /* I: OLI model */
+    int gcp_num,                /* I: GCP array number */
+    GCP_STRUCT gcp_struct[]     /* I/O: Array of GCP information structures */
+);
+
+int get_lat_long
+(
+    double line,                /* I: Line */
+    double samp,                /* I: Sample */
+    double dem_ht,              /* I: DEM height at GCP location */
+    double s_major,             /* I: Semi major axis */
+    double flat,                /* I: Flattening of the spheroid */
+    const double *vector_y,     /* I: Coefficient vector for y */
+    const double *vector_x,     /* I: Coefficient vector for x */
+    IAS_VECTOR *pixpos          /* O: Cartesian vector for the coord */
+);
+
+int get_position_and_reference_time
+(
+    L1GIO *l1g_ptr,             /* I: L1G structure with OPEN band */
+    const char *grid_filename,  /* I: Geometric grid file */
+    const IAS_LOS_MODEL *model, /* I: Systematic OLI model */
+    int numgcp,                 /* I: Number of ground control points */
+    int srch_band,              /* I: Search Band number */
+    GCP_STRUCT *gcp_struct,     /* I/O: GCP structure for precision process */
+    double ref_time[3]          /* O: Reference time year,day,seconds */
+);
+
+int get_proj_info
+(
+    L1GIO *l1g_ptr,             /* I: L1G structure with OPEN band */
+    IAS_PROJECTION *proj_info   /* O: Projection info needed to run GCTPC */
+);
+
+int initialize_gcp_struct
+(
+    const IAS_GCP_RESULTS *gcp_data,  /* I: GCP data records */
+    int number_gcp,             /* I: Number of GCP data records */
+    L1GIO *l1g_file,            /* I: L1G info structure for the image */
+    GCP_STRUCT **gcp_struct     /* O: GCP structure for model correction */
+);
+
+int initialize_precision
+(
+    PARAM_FLAG param_flag,  /* I: Option flag for parameterization:
+        "att_orb": estimate attitude plus dz
+        "eph_yaw": estimate ephemeris plus yaw
+        "both": estimate ephemeris and attitude
+        "weight": estimate both with MINQUE and
+        MLHE weight factor estimation - added by JCS 1/97 */
+    int est_time_flag,      /* I: Option flag for estimating time rate
+                                  1: estimate rate of attitude and ephemeris 
+                                  0: do not estimate the rate */
+    const PRECISION_CORRECTIONS *precision_corr,
+                            /* I: Structure of precision correction and
+                                  a priori information */
+    const double tot_Yb[NPARMS],  /* I: Current net correction parameters */
+    NORMAL_STRUCT *normal   /* O: Structure of normal equation information */
+);
+
+int observation_residual
+(
+    int num_gcp,                /* I: Number of GCPs used in the correction
+                                      solution */
+    const double sol_Ya[NPARMS],/* I: Solution parameters from alpha */
+    double ref_time,            /* I: Reference time for correction (seconds) */
+    double radius,              /* I: Radius of the Earth (meters) */
+    double height,              /* I: Height of satellite (meters) */
+    GCP_STRUCT gcp_struct[]     /* I/O: Structure of GCP information updated
+                                        for the residual information */
+);
+
+int connect_to_db(void);
+
+int process_one_gcp
+(
+    const IAS_VECTOR *satpos,/* I: Satellite position vector, Earth-fixed
+                                  (meters) */
+    const IAS_VECTOR *satvec,/* I: Satellite velocity vector, in Earth-fixed
+                                  (meters/second) */
+    const IAS_VECTOR *satatt,/* I: Satellite attitude (radians) */
+    const IAS_VECTOR *gcppos,/* I: GCP position vector, Earth-fixed (meters) */
+    int outflag,            /* I: GCP outlier flag TRUE = OK, FALSE = outlier */
+    PARAM_FLAG param_flag,  /* I: Parameterization flag, valued "att_orb",
+                                  "eph_yaw", "both", or "weight".
+                                  Option "weight" - added by JCS 1/97 */
+    int est_time_flag,      /* I: Time rate estimation flag, valued 1 or 0 */
+    double diff_time,       /* I: Time difference from the reference time to
+                                  the sensor time for the GCP (seconds) */
+    double delta,           /* I: Across-track angle of the pixel point
+                                  (radians) */
+    double psi,             /* I: Along-track angle of the pixel point
+                                  (radian) */
+    double radius,          /* I: Radius of the Earth (meters) */
+    double height,          /* I: Height of satellite (meters) */
+    NORMAL_STRUCT *normal,  /* I/O: Structure of normal equation information.
+                                    Updated by adding the current GCP */
+    double apd[],           /* O: Alpha partial derivatives for current GCP */
+    double bpd[],           /* O: Beta partial derivatives for current GCP */
+    double *alpha,          /* O: Differences in across-track angle
+                                  (micro radian) */
+    double *beta            /* O: Differences in along-track angle
+                                  (micro radian) */
+);
+
+int put_solution
+(
+    const char *l1g_img_name,       /* I: L1G HDF filename */
+    const char *solution_filename,  /* I: Name of the solution file */
+    const GCP_SOLUTION *gcp_sol     /* I: Pointer to correction information
+                                          structure */
+);
+
+int read_parameters
+(
+    const char *parameter_filename,  /* I: Name of the parameter file */
+    IAS_CPF **cpf                    /* O: Pointer to cpf structure */
+);
+
+void reset_observe_angle
+(
+    int num_gcp,            /* I: Number of GCPs used in the correction
+                                  solution */
+    GCP_STRUCT gcp_struct[] /* I/O: Structure of GCP information updated
+                                  for the satpos, satvel, delta, and psi */
+);
+
+int setup_partial_coefficients
+(
+    PARAM_FLAG param_flag,  /* I: Option flag for parameterization:
+        "att_orb": estimate attitude plus dz and rates
+        "eph_yaw": estimate ephemeris plus yaw and rates
+        "both": estimate all NPARMS parameters and rates
+        "weight": estimate all NPARMS with MINQUE and MLHE
+        weight factor estimation - added by JCS */
+    int est_time_flag,      /* I: Option flag for estimating time rate or not
+                                  1: estimate the rate
+                                  0: not to estimate the rates */
+    double delta,           /* I: Across-track angle for image point
+                                  (radians) */
+    double diff_time,       /* I: Time increment from the reference time epoch
+                                  to the GCP sensed time (seconds) */
+    double radius,          /* I: Radius of the Earth (meters) */
+    double height,          /* I: Height of satellite (meters) */
+    const IAS_VECTOR *satatt,/* I: Spacecraft roll-pitch-yaw angles (radians) */
+    double H1[NPARMS],      /* O: Partial coefficients for alpha WRT
+                                  corrections */
+    double H2[NPARMS]       /* O: Partial coefficients for beta WRT
+                                  corrections */
+);
+
+int solve_weighted_least_square
+(
+    const double **obs_mx,      /* I: Normal matrix for observation */
+    const double obs_rgt[],     /* I: Right hand side term for observation */
+    const double apr_wgt_par[], /* I: Normal matrix for the a priori
+                                      information (diagonal) */
+    const double apr_corr[],    /* I: Right hand side term for the a priori
+                                      information */
+    int num_params,             /* I: Number of dimensions */
+    double wgt_fact_obs,        /* I: Scale factor for weight of observation */
+    double wgt_fact_apr,        /* I: Scale factor for weight of a priori
+                                      parameters */
+    double **ptr_cov_mx,        /* O: Solution covariance matrix */
+    double sol_Ya[]             /* O: Solution estimate vector */
+);
+
+int store_gcp_residuals_in_db
+(
+    GCP_CHAR_DATA *data,    /* I: Data to store in database */
+    int number_of_records   /* I: Number of records to store */
+);
+
+int store_solution_alignment_in_db
+(
+    ALIGNMENT_CHAR_DATA *data   /* I: Data to store in database */
+);
+
+int update_ephemeris
+(
+    const IAS_VECTOR *pos_chg,/* I: Position change in Orbit oriented system
+                                   (meters) */
+    const IAS_VECTOR *vel_chg,/* I: Velocity change in Orbit oriented system
+                                   (meters/second)*/
+    IAS_VECTOR *satpos,  /* I/O: Position in Earth Fixed system updated */
+    IAS_VECTOR *satvel   /* I/O: Velocity in Earth Fixed system updated */
+);
+
+void update_look_angle
+(
+    const IAS_VECTOR *satatt,   /* I: Original satellite roll, pitch, and yaw
+                                      angles */
+    const IAS_VECTOR *att_chg,  /* I: Roll, pitch and yaw angle corrections
+                                      (micro-radians) */
+    double *delta,              /* I/O: Across-track angle (radians) updated */
+    double *psi                 /* I/O: Along-track angle (radians) */
+);
+
+int update_observe_angle
+(
+    int num_gcp,                    /* I: Number of GCPs in the correction
+                                          solution */
+    const double tot_Yb[NPARMS],    /* I: Total estimate vector */
+    double ref_time,                /* I: Reference time for correction
+                                          (seconds) */
+    GCP_STRUCT gcp_struct[]         /* I/O: Structure of GCP information updated
+                                            for the satpos, satvel, delta,
+                                            and psi */
+);
+
+int update_omf
+(
+    int precision_succeeded_flag, /* I: Flag indicating if precision solution
+                                        meets minimum success qualifications */
+    int nbr_gcps_used,            /* I: Number of GCPs used */
+    double rms_gcp_fit,           /* I: RMS of final iteration across- and
+                                        along- track residuals */
+    double x_rmse,                /* I: post-fit across track (X) RMSE */
+    double y_rmse                 /* I: post-fit along track (Y) RMSE */
+);
+
+void write_free(void);
+
+int write_init
+(
+    int num_gcp  /* I: Number of GCP structures to allocate */
+);
+
+int write_residuals
+(
+    int iter,               /* I: Iteration number */
+    FILE *file_pointer,     /* I: Pointer to the rfile (residual file) */
+    int num_gcp,            /* I: The number of GCPs used in the solution; */
+    const IAS_LOS_MODEL *model,   /* I: OLI model */
+    GCP_STRUCT *gcp_struct, /* I/O: Array of GCP information structures */
+    double *rms             /* O: X and Y RMS residuals in ground units */
+);
+
+/* ----------------- Input parameter getter routines ---------------- */
+
+int get_store_in_database_flag(void);
+int get_precision_required_flag(void);
+char *get_l1g_filename(void);
+char *get_grid_filename(void);
+char *get_syst_model_filename(void);
+char *get_prec_model_filename(void);
+char *get_solution_filename(void);
+char *get_residual_filename(void);
+char *get_cpf_filename(void);
+char *get_gcp_data_filename(void);
+char *get_dem_filename(void);
+char *get_l0r_filename(void);
+char *get_omf_filename(void);
+int get_processing_pass(void);
+char *get_work_order_id(void);
+float get_outlier_threshold(void);
+int get_terrain_flag(void);
+PARAM_FLAG get_parameter_option(void);
+int get_time_rate_estimation_flag(void);
+int get_max_iterations(void);
+void get_precision_corr_information
+(
+    PRECISION_CORRECTIONS *precision_corr      /* O: Filled structure */
+);
+void get_doq_observation_sigma_apri
+(
+    double *obs_sigma_apri /* O: Filled array */
+);
+void get_gls_observation_sigma_apri
+(
+    double *obs_sigma_apri /* O: Filled array */
+);
+
+/* ----------------- Parameter setter routines ---------------- */
+void set_terrain_flag
+(
+    int flag_value     /* I: value to set true = 1 or false = 0 */
+);
+
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_degrees2map();
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_radians2map();
+const IAS_GEO_PROJ_TRANSFORMATION *get_proj_transform_map2degrees();
+
+#endif

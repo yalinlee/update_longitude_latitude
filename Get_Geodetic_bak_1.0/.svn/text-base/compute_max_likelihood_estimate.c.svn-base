@@ -1,0 +1,134 @@
+/******************************************************************************
+NAME:           compute_max_likelihood_estimate
+
+PURPOSE: Estimate the variance factor with MLHE (Maximum Likelihood Estimate)
+
+RETURNS: SUCCESS or ERROR
+
+ALGORITHM REFERENCES:
+
+Dah-ning Yuan, Optimum Determination of the Earth's 
+        Gravitational Field from Satellite Tracking and Surface
+        Measurements, dissertation, The University of Texas at
+        Austin, Center for Space Research, 1991. 
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "correct_los_model.h"
+
+int compute_max_likelihood_estimate
+(
+    double obs_num,             /* I: Number of GCP (observation) */  
+    double obs_wss,             /* I: Weighted square sum of the observation */
+    const double **obs_mx,      /* I: The observation part of normal matrix */
+    const double obs_rgt[],     /* I: The observation part of right hand side */
+    const double apr_wgt_par[], /* I: The a priori weights */
+    const double apr_corr[],    /* I: The a priori parameters */
+    int num_parms,              /* I: Number of parameters in estimate vector */
+    double sol_Ya[],            /* I/O: WLS Estimate parameter vector */
+    double **cov_mx,            /* O: Inverse of the normal matrix of the WLS
+                                      problem */
+    double *wgt_fact_obs,       /* O: The estimated variance factor for the
+                                      observation */
+    double *wgt_fact_apr,       /* O: Estimated variance factor for a priori
+                                      variance */
+    double *post_sig            /* O: Weighted residual sum square for
+                                      observation */
+)
+{
+    int i, j, k;
+    double pxx;         /* Weighted residual sum square for a priori */
+    double s1, s2, s;   /* Temporary variables for finding the sum square */
+    double w1, w2;      /* Weight factors */
+    int status;
+
+    /* Initialize the weight factor */
+    w1 = 1.0;
+    w2 = 1.0;
+
+    /* Iterative estimation of the weight factors */
+    k = 0;
+    do
+    {
+        /* Compute the weighted residual square for the observation */
+        *post_sig = obs_wss;
+        for(i = 0; i < num_parms; i++)
+        {
+            s = 0.0;
+            for(j = 0; j < num_parms; j++)
+                s += (obs_mx[i][j] * sol_Ya[j]);
+            *post_sig += (sol_Ya[i] * s);
+            *post_sig -= (2.0 * sol_Ya[i] * obs_rgt[i]);
+        }
+
+        /* Compute the weighted residual square for the apriori parameters */
+        pxx = 0.0;
+        for(i = 0; i < num_parms; i++)
+        {
+            /* Check for division by zero */
+            if (apr_wgt_par[i] == 0.0)
+            {
+                IAS_LOG_ERROR("Attempting to divide by zero");
+                return ERROR;
+            }
+            s = apr_corr[i] / apr_wgt_par[i] - sol_Ya[i];
+            pxx += (s * s * apr_wgt_par[i]);
+        }
+
+        /* Compute the weight factor estimate */
+        *wgt_fact_obs = w1;
+        *wgt_fact_apr = w2;
+
+        /* Check for division by zero */
+        if (*post_sig == 0.0)
+        {
+            IAS_LOG_ERROR("Attempting to divide by zero: weighted residual "
+                "sum square for observation");
+            return ERROR;
+        }
+        else if (pxx == 0.0)
+        {
+            IAS_LOG_ERROR("Attempting to divide by zero: weighted residual "
+                "sum of squares for a priori");
+            return ERROR;
+        }
+        w1 = obs_num / *post_sig;
+        w2 = num_parms / pxx;
+
+        /* Compute the weight factor difference for this iteration */
+        s1 = w1 - *wgt_fact_obs;
+        s2 = w2 - *wgt_fact_apr;
+
+        /* Solve the new WLS solution with w1 and w2 as new weight factor.
+           If the least squares fails return zero and SUCCESS to the caller
+           so another solution my be tried.  This is done to distinguish
+           between other errors such as divide by zero. */
+        status = solve_weighted_least_square(obs_mx, obs_rgt, apr_wgt_par,
+                apr_corr, num_parms, w1, w2, cov_mx, sol_Ya);
+        if (status != SUCCESS)
+        {
+            *post_sig = 0.0;
+            return SUCCESS;
+        }
+        if(++k > 10)
+            break;
+        if(w1 > 1.0e6 || w2 > 5.0)
+            break;
+    } while(fabs(s1) > 1.0e-2 || fabs(s2) > 1.0e-2);
+
+    /* Compute the final variance factor estimate */
+    if ((w1 == 0.0) || (w2 == 0.0))
+    {
+        IAS_LOG_ERROR("Attempting to divide by zero");
+        return ERROR;
+    }
+
+    *wgt_fact_obs = 1.0 / w1;
+    *wgt_fact_apr = 1.0 / w2;
+
+    return SUCCESS;
+}

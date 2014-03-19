@@ -1,0 +1,102 @@
+/******************************************************************************
+NAME:           calc_partial_coeffs_with_attitude
+
+PURPOSE:        Compose the partial coefficients matrix of the observation
+                equation for param_flag = att_orb, estimating attitude plus
+                height.
+
+RETURN VALUE:
+SUCCESS  Partial coefficients found successfully
+ERROR    An error occurred, no coefficients found
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int calc_partial_coeffs_with_attitude
+(
+    double delta,       /* I: Across-track angle for the image point of the GCP
+                              (radians) */
+    double radius,      /* I: Radius of the Earth (meters) */
+    double height,      /* I: Height of the satellite (meters) */
+    const IAS_VECTOR *satatt, /* I: Spacecraft roll-pitch-yaw angles
+                                    (radians) */
+    double H1[NPARMS],  /* O: Partial coefficients for alpha */
+    double H2[NPARMS]   /* O: Partial coefficients for beta */
+)
+{
+    double sindelta;    /* Sine of delta */
+    double cosdelta;    /* Cosine of delta */
+    double satrad;      /* Radius of satellite position (meters) */
+    double c;           /* Side perpendicular to look vector */
+    double b, d;        /* Sides in look vector direction */
+    double M[3][3];     /* Spacecraft orientation matrix */
+    double sr, cr, sp;  /* Attitude angle trig functions */
+    double cp, sy, cy;  /* Attitude angle trig functions */
+
+    /* Calculate the constants needed for H calculation */
+    sindelta = sin(delta); 
+    cosdelta = cos(delta);
+    satrad = radius + height;
+    c = satrad * sindelta;
+
+    /* Construct the orientation matrix */
+    sr = sin(satatt->x);
+    cr = cos(satatt->x);
+    sp = sin(satatt->y);
+    cp = cos(satatt->y);
+    sy = sin(satatt->z);
+    cy = cos(satatt->z);
+    M[0][0] = cp * cy;
+    M[0][1] = sr * sp * cy + cr * sy;
+    M[0][2] = sr * sy - cr * sp * cy;
+    M[1][0] = -cp * sy;
+    M[1][1] = cr * cy - sr * sp * sy;
+    M[1][2] = cr * sp * sy + sr * cy;
+    M[2][0] = sp;
+    M[2][1] = -sr * cp;
+    M[2][2] = cr * cp;
+
+    /* The side perpendicular to the look vector = satellite_radius *
+       sindelta */
+    /* Check for negative sqare root */
+    if (c > radius)
+    {
+        IAS_LOG_ERROR("Attempting square root of a negative number");
+        return ERROR;
+    }
+    b = sqrt(radius * radius - c * c);
+    d = satrad * cosdelta - b;
+
+    /* Check for division by zero error */
+    if (d == 0)
+    {
+        IAS_LOG_ERROR("Attempting to divide by zero");
+        return ERROR;
+    }
+
+    /* Compose the H matrix */
+    /* Alpha WRT roll (micro-radians) */
+    H1[0] = M[0][0];
+    /* Alpha WRT pitch (micro-radians) */
+    H1[1] = M[0][1];
+    /* Alpha WRT yaw (micro-radians) */
+    H1[2] = M[0][2];
+    /* Alpha WRT dz (meters) scaled to micro-radians */
+    H1[5] = -sindelta  * 1.0e6 / d;
+    /* Beta WRT roll (micro-radians) */
+    H2[0] = M[2][0] * tan(delta) - M[1][0];
+    /* Beta WRT pitch (micro-radians) */
+    H2[1] = M[2][1] * tan(delta) - M[1][1];
+    /* Beta WRT yaw (micro-radians) */
+    H2[2] = M[2][2] * tan(delta) - M[1][2];
+
+    return SUCCESS;
+}

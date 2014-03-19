@@ -1,0 +1,72 @@
+# This file sets up the environment variables needed to access the various
+# databases.  There are two ways to source this:
+#       source setup_db oliit
+# will set up things to use the I&T database
+#       source setup_db olidev username password
+# will set it up for a specific developer's database instance.  The "username"
+# here is the base part of the schema names to set up.  It is usually the
+# same as the account name or the person's last name.
+#
+# If "source setup_db olidev" is used without the username and password, it
+# will automatically use the shared work order common version of the database
+# in crdev.
+#
+# If no parameters are provided, the I&T environment will be set up.
+# FIXME - system test and production will need to be added here to set the 
+# ORACLE_SID and TWO_TASK properly.
+
+if ($#argv == 3) then
+    set VER = $1
+    set USERNAME = $2
+    set PW = $3
+else if ($#argv == 1) then
+    set VER = $1
+    if ($VER == "olidev") then
+        set VER = "olidevcommon"
+    endif
+else
+    # After everyone is converted over this should change to olidev.
+    set VER = oliit
+endif
+
+if ($VER == "olidev") then
+    setenv ORACLE_SID crdev
+    setenv TWO_TASK crdev
+    setenv IAS_OUI_DB $USERNAME'_wo_common/'$PW
+    setenv IAS_DB_COM $USERNAME'_wo_common/'$PW
+    setenv IAS_DB_L8_OLITIRS $USERNAME'_l8/'$PW
+    setenv IAS_DB_L8_OLITIRS_EVAL $USERNAME'_l8/'$PW
+    setenv IAS_DB_TRAM $USERNAME'_tram/'$PW
+else if ($VER == "lpgsdev") then
+    setenv ORACLE_SID crdev
+    setenv TWO_TASK crdev
+    setenv IAS_OUI_DB $USERNAME'_wo_lpgs/'$PW
+    setenv IAS_DB_COM $USERNAME'_wo_lpgs/'$PW
+    setenv IAS_DB_L8_OLITIRS $USERNAME'_l8_lpgs/'$PW
+    setenv IAS_DB_TRAM $USERNAME'_tram/'$PW
+else if ($VER == "olidevcommon") then
+    setenv ORACLE_SID crdev
+    setenv TWO_TASK crdev
+    setenv IAS_OUI_DB "wo_common_ias/xxx"
+    setenv IAS_DB_COM "wo_common_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS "l8_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS_EVAL "l8_ias_eval/xxx"
+else if ($VER == "oliit") then
+    setenv ORACLE_SID crit
+    setenv TWO_TASK crit
+    setenv IAS_DB_COM "wo_common_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS "l8_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS_EVAL "l8_ias_eval/xxx"
+else if ($VER == "olist") then
+    setenv ORACLE_SID crst
+    setenv TWO_TASK crst
+    setenv IAS_DB_COM "wo_common_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS "l8_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS_EVAL "l8_ias_eval/xxx"
+else if ($VER == "oliops") then
+    setenv ORACLE_SID crops
+    setenv TWO_TASK crops
+    setenv IAS_DB_COM "wo_common_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS "l8_ias/xxx"
+    setenv IAS_DB_L8_OLITIRS_EVAL "l8_ias_eval/xxx"
+endif

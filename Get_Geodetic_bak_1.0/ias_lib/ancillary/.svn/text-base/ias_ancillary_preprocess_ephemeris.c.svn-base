@@ -1,0 +1,136 @@
+/*****************************************************************************
+NAME: ias_ancillary_preprocess_ephemeris
+
+PURPOSE: Preprocess the L0R ephemeris data through a smoothing routine and
+         populate the ancillary data structure with the results.  The
+         ephemeris model is also updated with the smoothed ephemeris data.
+
+RETURN VALUE: Type = int
+    Value    Description
+    -----    -----------
+    SUCCESS  Successful completion
+    ERROR    Operation failed
+
+MEMORY MANAGEMENT:
+
+    Memory Passed Back To Parent Routine:
+        anc_ephemeris_data
+
+*****************************************************************************/
+
+#include <stdlib.h>
+
+#include "ias_logging.h"
+#include "ias_ancillary.h"
+#include "ias_ancillary_private.h"
+
+int ias_ancillary_preprocess_ephemeris
+(
+    IAS_CPF *cpf,                      /* I: CPF structure */
+    const IAS_L0R_EPHEMERIS *l0r_ephemeris, /* I: L0R ephemeris structure */
+    int l0r_ephemeris_count,           /* I: number of records in L0R data */
+    const double *interval_start_time, /* I: interval start YEAR, DOY, SOD */
+    const double *interval_stop_time,  /* I: interval stop YEAR, DOY, SOD */
+    IAS_ACQUISITION_TYPE acquisition_type, /* I: Image acquisition type */
+    IAS_ANC_EPHEMERIS_DATA **anc_ephemeris_data, /* O: pointer to ephem data */
+    int *invalid_ephemeris_count       /* O: number of bad ephemeris points 
+                                             detected */
+)
+{
+    int valid_ephemeris_count = 0;       /* valid ephemeris count */
+    double *ephemeris_seconds_since_j2000 = NULL; /* array of ephemeris seconds
+                                                     since j2000 */
+    IAS_VECTOR *smoothed_eph_pos = NULL; /* smoothed ephemeris position data */
+    IAS_VECTOR *smoothed_eph_vel = NULL; /* smoothed ephemeris velocity data */
+    int number_ephemeris_records;        /* size of ephemeris structures */
+
+    *anc_ephemeris_data = NULL;
+
+    /* Allocate memory for the ephemeris seconds */
+    if (l0r_ephemeris_count < IAS_LAGRANGE_PTS)
+    {
+        number_ephemeris_records = IAS_LAGRANGE_PTS;
+    } 
+    else
+    {
+        number_ephemeris_records = l0r_ephemeris_count;
+    } 
+
+    ephemeris_seconds_since_j2000 =
+        (double *)malloc(sizeof(double) * number_ephemeris_records);
+    if (ephemeris_seconds_since_j2000 == NULL)
+    {
+        IAS_LOG_ERROR("Allocating ephemeris_seconds_since_j2000");
+        return ERROR;
+    }
+
+    smoothed_eph_pos =
+        (IAS_VECTOR *)malloc(sizeof(IAS_VECTOR) * number_ephemeris_records);
+    if (smoothed_eph_pos == NULL)
+    {
+        IAS_LOG_ERROR("Allocating smoothed_eph_pos");
+        free(ephemeris_seconds_since_j2000);
+        return ERROR;
+    }
+
+    smoothed_eph_vel =
+        (IAS_VECTOR *)malloc(sizeof(IAS_VECTOR) * number_ephemeris_records);
+    if (smoothed_eph_vel == NULL)
+    {
+        IAS_LOG_ERROR("Allocating smoothed_eph_vel");
+        free(ephemeris_seconds_since_j2000);
+        free(smoothed_eph_pos);
+        return ERROR;
+    }
+
+    /* Compute the smoothed ephemeris values from the L0R ephemeris data.
+       The memory for ephemeris_seconds_since_j2000 is allocated inside
+       the smoothing routine. */
+    if (ias_ancillary_smooth_ephemeris(
+            acquisition_type, cpf, l0r_ephemeris, l0r_ephemeris_count,
+            interval_start_time, interval_stop_time, &valid_ephemeris_count,
+            invalid_ephemeris_count, ephemeris_seconds_since_j2000,
+            smoothed_eph_pos, smoothed_eph_vel) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Computing smoothed ephemeris");
+        free(ephemeris_seconds_since_j2000);
+        free(smoothed_eph_pos);
+        free(smoothed_eph_vel);
+        return ERROR;
+    }
+
+    /* Allocate the ancillary data structure */
+    *anc_ephemeris_data =
+        ias_ancillary_allocate_ephemeris(valid_ephemeris_count);
+    if ((*anc_ephemeris_data) == NULL)
+    {
+        IAS_LOG_ERROR("Allocating ancillary ephemeris records");
+        free(ephemeris_seconds_since_j2000);
+        free(smoothed_eph_pos);
+        free(smoothed_eph_vel);
+        return ERROR;
+    }
+
+    /* Build/Populate the anc_ephemeris_data from the smoothed ephemeris data.
+       The ephemeris model is also updated with the smoothed ephemeris data.
+       The memory for the ephemeris records in the model structure are
+       allocated inside the build routine. */
+    if (ias_ancillary_build_ephemeris(
+            cpf, valid_ephemeris_count, ephemeris_seconds_since_j2000,
+            smoothed_eph_pos, smoothed_eph_vel, *anc_ephemeris_data) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Building ancillary ephemeris");
+        free(ephemeris_seconds_since_j2000);
+        free(smoothed_eph_pos);
+        free(smoothed_eph_vel);
+        free(*anc_ephemeris_data);
+        return ERROR;
+    }
+
+    /* Free the memory allocated by the smoothing routine */
+    free(ephemeris_seconds_since_j2000);
+    free(smoothed_eph_pos);
+    free(smoothed_eph_vel);
+
+    return SUCCESS;
+}

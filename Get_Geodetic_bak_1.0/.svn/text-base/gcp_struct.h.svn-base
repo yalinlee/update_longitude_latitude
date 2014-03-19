@@ -1,0 +1,81 @@
+#ifndef GCPSTRUCT_H
+#define GCPSTRUCT_H
+
+#include "gctp.h" /* for unit and projection definitions */
+#include "ias_gcp.h"
+#include "ias_structures.h"
+
+#define NPARMS 12
+#define AEPARMS 6
+
+/* define the states for the accept flag */
+#define GOOD_POINT 1
+#define OUTLIER_POINT 0
+#define INVALID_POINT -1
+
+/* The Ground Control Point structure of information for one point */
+typedef struct gcp_struct
+{
+    char point_id[IAS_GCP_ID_SIZE]; /* Ground control point identifier */
+    int band_number;                /* Ground control point band numb of
+                                       systematic image*/
+    int accept_flag;                /* Ground control point outlier flag
+                                       (GOOD/BAD/INVALID) */
+    IAS_VECTOR satpos;              /* Satellite position of a point */
+    IAS_VECTOR satvel;              /* Satellite velocity of a point */
+    IAS_VECTOR gcp_position;        /* True ground point position of a point in
+                                       cartesian space */
+    IAS_VECTOR pixpos;              /* Position of the observed feature
+                                       calculated by the satellite model in
+                                       cartesian space */
+    double pred_line;               /* Predicted line from model */
+    double pred_samp;               /* Predicted sample from model */
+    double time;                    /* Time when GCP was imaged (seconds) */
+    double latitude;                /* True latitude of the GCP */
+    double longitude;               /* True longitude of the GCP */
+    double elevation;               /* True elevation of the ground control
+                                       point */
+    double dem_elevation;           /* DEM elevation of the measured GCP
+                                       (for L1Gt images) */
+    double delta;                   /* Across-track look angle (line-of-sight)
+                                       (radians) */
+    double psi;                     /* Along-track look angle (line-of-sight)
+                                       (radians) */
+    double alpha;                   /* Across-track Residual (micro-radians) */
+    double beta;                    /* Along-track Residual (micro-radians) */
+    double residual_x;              /* Residual value in ground space for x
+                                       (meters) */
+    double residual_y;              /* Residual value in ground space for y
+                                       (meters) */
+    double x1Gline;                 /* Level 1R image line number */
+    double x1Gsamp;                 /* Level 1R image sample number */
+    IAS_VECTOR satpos0;             /* Original satellite position */
+    IAS_VECTOR satvel0;             /* Original satellite velocity */
+    IAS_VECTOR satatt;              /* Original satellite attitude */
+    double apd[NPARMS];             /* GCP alpha partial derivatives */
+    double bpd[NPARMS];             /* GCP beta partial derivatives */
+    double delta0;                  /* Original across-track look angle */
+    double psi0;                    /* Original along-track look angle */
+    char chip_source[IAS_GCP_SOURCE_SIZE]; /* Chip source (DOQ, ETM-1,
+                                              ETM-2, etc.) */
+} GCP_STRUCT;
+
+typedef struct gcp_solution
+{
+    IAS_VECTOR p_satpos;
+    IAS_VECTOR p_satvel;
+    IAS_VECTOR p_rpyangle;
+    IAS_VECTOR p_rpyrate;
+    double p_time;
+    double p_year;
+    double p_day;
+    double p_second;
+    double p_refroll;
+    double p_refpitch;
+    double p_refyaw;
+    double p_cov[NPARMS][NPARMS];
+    double p_rpy_sterr[AEPARMS];
+    double p_pos_sterr[AEPARMS];
+} GCP_SOLUTION;
+
+#endif /* #ifndef GCPSTRUCT_H */

@@ -1,0 +1,216 @@
+/******************************************************************************
+NAME:           put_solution
+
+PURPOSE:        Write out the orbit and attitude correction parameters
+                estimates to the solution file.
+
+RETURN VALUE:
+SUCCESS         Successfully written to the solution file
+ERROR           Failure to write to file
+
+*******************************************************************************
+                        Property of the U.S. Government
+                              USGS EROS Data Center
+******************************************************************************/
+#include <stdio.h>
+#include <math.h>
+#include "ias_const.h"
+#include "ias_miscellaneous.h"
+#include "ias_logging.h"
+#include "ias_satellite_attributes.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int put_solution
+(
+    const char *l1g_img_name,       /* I: L1G HDF filename */
+    const char *solution_filename,  /* I: Name of the solution file */
+    const GCP_SOLUTION *gcp_sol     /* I: Pointer to correction information
+                                          structure */
+)
+{
+    int i, j;                   /* Looping variables */
+    double s1, s2;              /* Temp value for sigma */
+    double s3, s4;              /* Temp value for sigma */
+    double s5, s6;              /* Temp value for sigma */
+    FILE *sol_fptr;             /* Pointer to the solution file */
+    int status = 0;
+    IAS_REPORT_HEADER *report_header;
+    int write_errors = 0;
+
+    /* Open file */
+    sol_fptr = fopen(solution_filename, "w");
+    if(sol_fptr == NULL)
+    {
+        IAS_LOG_ERROR("Opening solution file: %s", solution_filename );
+        return ERROR;
+    }
+
+    /* Write the GPS-style output header */
+    report_header = ias_misc_initialize_gps_report_header(get_l1g_filename(),
+            get_l0r_filename(), get_work_order_id(), "CORRECT_LOS_MODEL");
+    if (report_header == NULL)
+    {
+        IAS_LOG_ERROR("Initializing GPS report header");
+        return ERROR;
+    }
+
+    status = ias_misc_write_gps_report_header(sol_fptr, report_header);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing the GPS header for this report");
+        ias_misc_free_report_header(report_header);
+        return ERROR;
+    }
+
+    /* Release the report header memory allocated by that library */
+    ias_misc_free_report_header(report_header);
+    report_header = NULL;
+
+    /* Write reference time to the solution file */
+    if (fprintf(sol_fptr, "\n\nReference Time -->\n") < 0)
+        write_errors++;
+    if (fprintf(sol_fptr,"  Year: %6.0f\n  Day: %6.0f\n  Second: %12.6e\n\n",
+                gcp_sol->p_year,gcp_sol->p_day, gcp_sol->p_second) < 0)
+    {
+        write_errors++;
+    }
+
+    /* Write out the attitude correction parameters for the reference time */
+    if (fprintf(sol_fptr,
+                "Attitude Correction Parameters -->\n") < 0)
+    {
+        write_errors++;
+    }
+    if (fprintf(sol_fptr,
+                "  Angles (in microradians):\n"
+                "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - %10.3f\n"
+                "  Rates (in radians/second):\n"
+                "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - %10.3f\n",
+                (gcp_sol->p_rpyangle).x,    /* Roll angle (micro-radians) */
+                (gcp_sol->p_rpyangle).y,    /* Pitch angle (micro-radians) */
+                (gcp_sol->p_rpyangle).z,    /* Yaw angle (micro-radians) */
+                (gcp_sol->p_rpyrate).x,     /* Roll rate (meters/radian/sec) */
+                (gcp_sol->p_rpyrate).y,     /* Pitch rate (meters/radian/sec) */
+                (gcp_sol->p_rpyrate).z) < 0)/* Yaw rate (meters/radian/sec) */
+    {
+        write_errors++;
+    }
+
+    s1 = (gcp_sol->p_cov)[0][0];
+    s2 = (gcp_sol->p_cov)[1][1];
+    s3 = (gcp_sol->p_cov)[2][2];
+    s4 = (gcp_sol->p_cov)[6][6];
+    s5 = (gcp_sol->p_cov)[7][7];
+    s6 = (gcp_sol->p_cov)[8][8];
+    if (fprintf(sol_fptr,
+                "  Angle Sigmas:\n"
+                "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - %10.3f\n"
+                "  Rate Sigmas:\n"
+                "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - "
+                "%10.3f\n\n",
+                sqrt(s1), sqrt(s2), sqrt(s3),  /* Sigma of roll, pitch, yaw */
+                sqrt(s4), sqrt(s5), sqrt(s6)) < 0) /* Sigma for attitude rate */
+    {
+        write_errors++;
+    }
+
+    /* Write out the orbit correction parameters for the reference time */
+    if (fprintf(sol_fptr, "Orbit Correction Parameters -->\n") < 0)
+        write_errors++;
+    if (fprintf(sol_fptr,
+                "  Position (in meters):\n"
+                "    x - %10.3f\n    y - %10.3f\n    z - %10.3f\n"
+                "  Velocity (in meters/second):\n"
+                "    x - %10.3f\n    y - %10.3f\n    z - %10.3f\n",
+                (gcp_sol->p_satpos).x, /* Orbit system x position (meters) */
+                (gcp_sol->p_satpos).y, /* Orbit system y position (meters) */
+                (gcp_sol->p_satpos).z, /* Orbit system z position (meters) */
+                (gcp_sol->p_satvel).x, /* Orbit system x velocity (meters/sec)*/
+                (gcp_sol->p_satvel).y, /* Orbit system y velocity (meters/sec)*/
+                (gcp_sol->p_satvel).z) < 0) /* Orbit sys z velocity (m/sec) */
+    {
+        write_errors++;
+    }
+
+    s1 = (gcp_sol->p_cov)[3][3];
+    s2 = (gcp_sol->p_cov)[4][4];
+    s3 = (gcp_sol->p_cov)[5][5];
+    s4 = (gcp_sol->p_cov)[9][9];
+    s5 = (gcp_sol->p_cov)[10][10];
+    s6 = (gcp_sol->p_cov)[11][11];
+    if (fprintf(sol_fptr,
+                "  Position Sigmas:\n"
+                "    dx - %10.3f\n    dy - %10.3f\n    dz - %10.3f\n"
+                "  Velocity Sigmas:\n"
+                "    dx - %10.3f\n    dy - %10.3f\n    dz - %10.3f\n\n",
+                sqrt(s1), sqrt(s2), sqrt(s3),  /* Sigma of dx, dy, and dz */
+                sqrt(s4), sqrt(s5), sqrt(s6)) < 0) /* Sigma for dx,dy,dz rate */
+    {
+        write_errors++;
+    }
+
+    /* Write out the covariance matrix for bias parameters */
+    if (fprintf(sol_fptr, "Covariance Matrix for Bias Parameters -->\n") < 0)
+        write_errors++;
+    for(i = 0; i < AEPARMS; i++)
+    {
+        for(j = 0; j < AEPARMS; j++)
+        {
+            if (fprintf(sol_fptr, "%12.4e", (gcp_sol->p_cov)[i][j]) < 0)
+                write_errors++;
+        }
+        if (fprintf(sol_fptr, "\n") < 0)
+            write_errors++;
+    }
+    if (fprintf(sol_fptr, "\n") < 0)
+        write_errors++;
+
+    /* Write out the covariance matrix for rate parameters */
+    if (fprintf(sol_fptr, "Covariance Matrix for Rate Parameters -->\n") < 0)
+        write_errors++;
+    for(i = AEPARMS; i < NPARMS; i++)
+    {
+        for(j = AEPARMS; j < NPARMS; j++)
+        {
+            if (fprintf(sol_fptr, "%12.4e", (gcp_sol->p_cov)[i][j]) < 0)
+                write_errors++;
+        }
+        if (fprintf(sol_fptr, "\n") < 0)
+            write_errors++;
+    }
+    if (fprintf(sol_fptr, "\n") < 0)
+        write_errors++;
+
+    /* Write out the roll, pitch, and yaw for the reference time */
+    if (fprintf(sol_fptr, "Reference Attitude Parameters -->\n") < 0)
+        write_errors++;
+    if (fprintf(sol_fptr,
+                "  Angles (in microradians):\n"
+                "    Roll  - %10.3f\n    Pitch - %10.3f\n    Yaw   - %10.3f\n",
+                (gcp_sol->p_refroll),       /* Roll angle (micro-radians) */
+                (gcp_sol->p_refpitch),      /* Pitch angle (micro-radians) */
+                (gcp_sol->p_refyaw)) < 0)   /* Yaw angle (micro-radians) */
+    {
+        write_errors++;
+    }
+    if (fprintf(sol_fptr, "\n") < 0)
+        write_errors++;
+
+    /* Close the file */
+    status = fclose(sol_fptr);
+    if (status)
+    {
+        IAS_LOG_ERROR("Closing solution file: %s", solution_filename );
+        return ERROR;
+    }
+
+    /* Check if there were errors writing the file */
+    if (write_errors > 0)
+    {
+        IAS_LOG_ERROR("Writing solution file %s", solution_filename);
+        return ERROR;
+    }
+
+    return SUCCESS;
+}

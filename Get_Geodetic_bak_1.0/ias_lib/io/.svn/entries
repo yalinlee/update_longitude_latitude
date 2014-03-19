@@ -1,0 +1,101 @@
+10
+
+dir
+37737
+svn://edclxs131/tags/oli_ias/LPGS_2_2_1_OPS/ias_lib/io
+svn://edclxs131
+
+
+
+2013-04-15T12:34:40.200365Z
+37379
+tbeckman
+has-props
+
+
+
+
+
+
+
+
+
+
+
+
+
+e7b4fd2c-4cc2-4180-8710-4c0deb5a94ea
+
+model
+dir
+
+L1G
+dir
+
+geometric_grid
+dir
+
+ancillary_io
+dir
+
+grid
+dir
+
+bpf_file
+dir
+
+parameter_file_io
+dir
+
+rlut
+dir
+
+cpf_file
+dir
+
+gcp
+dir
+
+Makefile.am
+file
+
+
+
+
+2013-05-13T17:34:36.000000Z
+1be662bf9d49bedcffbbfba5afb905ce
+2011-02-10T18:53:47.510842Z
+22033
+ruggles
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1119
+
+bpf_database
+dir
+
+L0R
+dir
+
+L1R
+dir
+

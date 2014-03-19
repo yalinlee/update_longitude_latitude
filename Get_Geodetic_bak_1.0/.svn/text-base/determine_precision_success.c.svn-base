@@ -1,0 +1,70 @@
+/**************************************************************************
+ NAME:          determine_precision_success
+
+ PURPOSE:       Reviews the level of correlation to determine if precision
+                correction can be considered successful or not.
+
+ RETURNS:       SUCCESS or ERROR
+***************************************************************************/
+#include "ias_logging.h"
+#include "correct_los_model.h"
+
+void determine_precision_success
+(
+    double outlier_fraction,       /* I: Fraction of GCPs that are outliers */
+    const PRECISION_CORRECTIONS *precision_corr, /* I: Precision corrections */
+    const IAS_CPF_GEO_SYSTEM *geo_system, /* I: Geometric thresholds */
+    int *precision_succeeded_flag  /* O: Flag indicating if precision solution
+                                         meets minimum success qualifications */
+)
+{
+    /* Initialize the flag to indicate precision correction was successful */
+    *precision_succeeded_flag = 1;
+
+    /* Compare the percentage of GCPs that are outliers to a threshold, and
+       also compare the absolute number of valid GCPs to a threshold.  Only 
+       flag failure if both checks fail */ 
+    if ((outlier_fraction > geo_system->max_percent_gcp_outliers) &&
+        (precision_corr->num_valid_gcp < 
+         geo_system->minimum_number_nonoutlier_control_gcps))
+    {
+        *precision_succeeded_flag = 0;
+        IAS_LOG_WARNING("Precision solution percentage of GCPs that are "
+            "outliers %f exceeded threshold of %f and number of valid GCPs "
+            "%d is less than minimum %d", outlier_fraction * 100,
+            geo_system->max_percent_gcp_outliers * 100,
+            precision_corr->num_valid_gcp,
+            geo_system->minimum_number_nonoutlier_control_gcps);
+    }
+
+    /* Compare the prefit and postfit X and Y GCP RMS values to 
+       corresponding thresholds */
+    if (precision_corr->rms_prefit[0] > geo_system->x_prefit_gcp_rms)
+    {
+        *precision_succeeded_flag = 0;
+        IAS_LOG_WARNING("Precision solution prefit RMS in the X direction %f "
+            "exceeded threshold of %f", precision_corr->rms_prefit[0],
+            geo_system->x_prefit_gcp_rms);
+    }
+    if (precision_corr->rms_prefit[1] > geo_system->y_prefit_gcp_rms)
+    {
+        *precision_succeeded_flag = 0;
+        IAS_LOG_WARNING("Precision solution prefit RMS in the Y direction %f "
+            "exceeded threshold of %f", precision_corr->rms_prefit[1],
+            geo_system->y_prefit_gcp_rms);
+    }
+    if (precision_corr->rms_postfit[0] > geo_system->x_postfit_gcp_rms)
+    {
+        *precision_succeeded_flag = 0;
+        IAS_LOG_WARNING("Precision solution postfit RMS in the X direction %f "
+            "exceeded threshold of %f", precision_corr->rms_postfit[0],
+            geo_system->x_postfit_gcp_rms);
+    }
+    if (precision_corr->rms_postfit[1] > geo_system->y_postfit_gcp_rms)
+    {
+        *precision_succeeded_flag = 0;
+        IAS_LOG_WARNING("Precision solution postfit RMS in the Y direction %f "
+            "exceeded threshold of %f", precision_corr->rms_postfit[1],
+            geo_system->y_postfit_gcp_rms);
+    }
+}

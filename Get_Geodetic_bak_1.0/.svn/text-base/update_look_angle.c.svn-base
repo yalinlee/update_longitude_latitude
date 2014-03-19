@@ -1,0 +1,102 @@
+/******************************************************************************
+NAME:           update_look_angle
+
+PURPOSE:        Calculate the new look angles by adding the attitude angle
+                perturbation.
+
+RETURNS:        none
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_structures.h"
+#include "ias_math.h"
+#include "correct_los_model.h"
+
+void update_look_angle
+(
+    const IAS_VECTOR *satatt,   /* I: Original satellite roll, pitch, and yaw
+                                      angles */
+    const IAS_VECTOR *att_chg,  /* I: Roll, pitch and yaw angle corrections
+                                      (micro-radians) */
+    double *delta,              /* I/O: Across-track angle (radians) updated */
+    double *psi                 /* I/O: Along-track angle (radians) */
+)
+{
+    IAS_VECTOR ul, ul1;         /* Look vectors */
+    double roll, pitch, yaw;    /* Attitude angle corrections (radians) */
+    double cosr, sinr;          /* Cosine and sine of roll */
+    double cosp, sinp;          /* Cosine and sine of pitch */
+    double cosy, siny;          /* Cosine and sine of yaw */
+    double Att[3][3];           /* Composite attitude correction rotation
+                                   matrix */
+    double B[3][3];             /* Original attitude rotation matrix */
+    double Bt[3][3];            /* Transpose of original attitude rotation
+                                   matrix */
+    double C[3][3];             /* Attitude correction rotation matrix */
+    double D[3][3];             /* Composite C Bt rotation matrix */
+
+    /* Compute trig functions of original roll, pitch, and yaw */
+    cosr = cos(satatt->x);
+    sinr = sin(satatt->x);
+    cosp = cos(satatt->y);
+    sinp = sin(satatt->y);
+    cosy = cos(satatt->z);
+    siny = sin(satatt->z);
+
+    /* Construct the original attitude rotation matrix
+       Note that B is Macs2orb and Bt is Morb2acs */
+    Bt[0][0] = B[0][0] = cosp * cosy;
+    Bt[1][0] = B[0][1] = sinr * sinp * cosy + cosr * siny;
+    Bt[2][0] = B[0][2] = sinr * siny - cosr * sinp * cosy;
+    Bt[0][1] = B[1][0] = -cosp * siny;
+    Bt[1][1] = B[1][1] = cosr * cosy - sinr * sinp * siny;
+    Bt[2][1] = B[1][2] = cosr * sinp * siny + sinr * cosy;
+    Bt[0][2] = B[2][0] = sinp;
+    Bt[1][2] = B[2][1] = -sinr * cosp;
+    Bt[2][2] = B[2][2] = cosr * cosp;
+
+    /* Convert the units of the attitude corrections to radians */
+    roll = att_chg->x * 1.0e-6;
+    pitch = att_chg->y * 1.0e-6;
+    yaw = att_chg->z * 1.0e-6;
+
+    /* Compute trig functions of roll, pitch, and yaw corrections */
+    cosr = cos(roll);
+    sinr = sin(roll);
+    cosp = cos(pitch);
+    sinp = sin(pitch);
+    cosy = cos(yaw);
+    siny = sin(yaw);
+
+    /* Construct the attitude correction rotation matrix
+       Note that C is Mprecision */
+    C[0][0] = cosp * cosy;
+    C[0][1] = sinr * sinp * cosy + cosr * siny;
+    C[0][2] = sinr * siny - cosr * sinp * cosy;
+    C[1][0] = -cosp * siny;
+    C[1][1] = cosr * cosy - sinr * sinp * siny;
+    C[1][2] = cosr * sinp * siny + sinr * cosy;
+    C[2][0] = sinp;
+    C[2][1] = -sinr * cosp;
+    C[2][2] = cosr * cosp;
+
+    /* The composite correction, Mcorr, is:  A = B C Bt */
+    //ias_math_multiply_3x3_matrix(&C[0][0], &Bt[0][0], &D[0][0]);
+    //ias_math_multiply_3x3_matrix(&B[0][0], &D[0][0], &Att[0][0]);
+    ias_math_multiply_3x3_matrix(C, Bt, D);
+    ias_math_multiply_3x3_matrix(B, D, Att);
+
+    /* Construct the look vector from the two look angles */
+    ul.x = tan(*psi);
+    ul.y = tan(*delta);
+    ul.z = 1.0;
+
+    /* Rotate LOS using attitude correction */
+    ias_math_transform_3dvec(&ul, Att, &ul1);
+
+    /* Calculate the new look angles */
+    *psi = atan2(ul1.x, ul1.z);
+    *delta = atan2(ul1.y, ul1.z);
+}

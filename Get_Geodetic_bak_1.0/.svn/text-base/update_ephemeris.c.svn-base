@@ -1,0 +1,59 @@
+/******************************************************************************
+NAME:           update_ephemeris
+
+PURPOSE:        Calculate the orbit position change and update the ephemeris
+                data in Earth Fixed system.
+
+RETURNS:        SUCCESS or ERROR
+*******************************************************************************
+                       Property of the U.S. Government
+                          USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "ias_math.h"
+#include "ias_geo.h"
+#include "correct_los_model.h"
+
+int update_ephemeris
+(
+    const IAS_VECTOR *pos_chg,/* I: Position change in Orbit oriented system
+                                   (meters) */
+    const IAS_VECTOR *vel_chg,/* I: Velocity change in Orbit oriented system
+                                   (meters/second)*/
+    IAS_VECTOR *satpos,  /* I/O: Position in Earth Fixed system updated */
+    IAS_VECTOR *satvel   /* I/O: Velocity in Earth Fixed system updated */
+)
+{
+    double Tef2oo[3][3]; /* Transformation matrix from Earth Fixed to Orbit */
+    IAS_VECTOR pos_corr; /* Position correction vector in Earth Fixed System */
+    IAS_VECTOR vel_corr; /* Velocity correction vector in Earth Fixed System */
+    int status;
+
+    /* Get transformation matrix */
+    status = ias_geo_compute_earth2orbit_transform(satpos, satvel, Tef2oo);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Obtaining earth fixed to orbit oriented "
+                "transformation matrix");
+        return ERROR;
+    }
+    ias_math_transpose_3x3_matrix(Tef2oo);
+
+    /* Position correction from OB to EF */
+    ias_math_transform_3dvec(pos_chg, Tef2oo, &pos_corr);
+
+    /* Velocity correction from OB to EF */
+    ias_math_transform_3dvec(vel_chg, Tef2oo, &vel_corr);
+
+    satpos->x += pos_corr.x;
+    satpos->y += pos_corr.y;
+    satpos->z += pos_corr.z;
+
+    satvel->x += vel_corr.x;
+    satvel->y += vel_corr.y;
+    satvel->z += vel_corr.z;
+
+    return SUCCESS;
+}

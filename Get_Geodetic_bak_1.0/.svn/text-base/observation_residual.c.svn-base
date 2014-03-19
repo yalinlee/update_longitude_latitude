@@ -1,0 +1,67 @@
+/******************************************************************************
+NAME:    observation_residual
+
+PURPOSE: Calculate the residual of alpha and beta for all GCPs.
+
+RETURNS:
+SUCCESS  Observation residual calculated successfully
+ERROR    An error occurred, residuals contents unreliable and/or incomplete
+*******************************************************************************
+                       Property of the U.S. Government
+                               NASA/GSFC/EDC
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int observation_residual
+(
+    int num_gcp,                /* I: Number of GCPs used in the correction
+                                      solution */
+    const double sol_Ya[NPARMS],/* I: Solution parameters from alpha */
+    double ref_time,            /* I: Reference time for correction (seconds) */
+    double radius,              /* I: Radius of the Earth (meters) */
+    double height,              /* I: Height of satellite (meters) */
+    GCP_STRUCT gcp_struct[]     /* I/O: Structure of GCP information updated
+                                        for the residual information */
+)
+{
+    int i, j;               /* Looping variables */
+    double H1[NPARMS];      /* Partial coefficients for alpha */
+    double H2[NPARMS];      /* Partial coefficients for beta */
+    double diff_time;       /* Time difference from reference time */
+    int status;
+
+    /* Loop over all GCPs */
+    for(i = 0; i < num_gcp; i++)
+    {
+        /* skip invalid points */
+        if (gcp_struct[i].accept_flag == INVALID_POINT)
+           continue;
+
+        /* Calculate full partial coefficients matrix for alpha and beta */
+        diff_time = gcp_struct[i].time - ref_time;
+        status = setup_partial_coefficients(BOTH, 1, gcp_struct[i].delta,
+                diff_time, radius, height, &(gcp_struct[i].satatt), H1, H2);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Calculating the alpha and beta partial "
+                "coefficients matrix");
+            return ERROR;
+        }
+
+        for(j = 0; j < NPARMS; j++)
+        {
+            /* Calculate the residual for alpha by subtracting the 
+               calculated observation */
+            gcp_struct[i].alpha -= H1[j] * sol_Ya[j];
+
+            /* Calculate the residual for beta by subtracting the 
+               calculated observation */
+            gcp_struct[i].beta -= H2[j] * sol_Ya[j];
+        }
+    }
+
+    return SUCCESS;
+}

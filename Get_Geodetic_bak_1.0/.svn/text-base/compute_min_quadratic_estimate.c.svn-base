@@ -1,0 +1,196 @@
+/******************************************************************************
+NAME:           compute_min_quadratic_estimate
+
+PURPOSE: Estimate the variance factor with MINQUE (Minmum Norm Quadratic
+         Unbiased Estimate)
+
+RETURN VALUE:
+SUCCESS         Process completed successfully
+ERROR           Error occurred, no estimate given
+
+ALGORITHM REFERENCES:
+Landsat 7 Image Assessment System (IAS) Geometric Algorithm Theoretical
+Basis Document (ATBD)
+
+Sahin, M. etc., Variance component estimation applied to satellite laser
+  ranging, Bulletin Geodesique, 66:284-295,1992;
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <stdlib.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "correct_los_model.h"
+
+int compute_min_quadratic_estimate
+(
+    double obs_num,             /* I: Number of GCPs (observation) */   
+    double obs_vwv,             /* I: Weighted square sum of the observation */
+    const double **obs_mx,      /* I: Observation part of the normal matrix */
+    const double obs_rgt[],     /* I: Observation part of the right hand side */
+    const double apr_wgt_par[], /* I: Diagonal of the a priori weights */
+    const double apr_corr[],    /* I: The a priori parameters */
+    int num_params,             /* I: Number of parameters */
+    double **ptr_cov_mx,        /* I/O: Inverse of WLS problem normal matrix */
+    double sol_Ya[],            /* I/O: WLS estimate parameter vector */
+    double *wgt_fact_obs,       /* O: The estimated variance factor for the
+                                      observation */
+    double *wgt_fact_apr,       /* O: Estimated variance factor for a priori
+                                      variance */
+    double *post_sig            /* O: Posterior noise level sig for scan angle*/
+)
+{
+    int i, j, k;
+    double rss_obs;          /* Observation weighted residual sum square */
+    double rss_apr;          /* A priori weighted residual sum square */
+    double s1, s2, s12, ss1; /* Coefficients for quadratic equation */
+    double **cc1, **cc2;     /* ptr_cov_mx * obs_mx, ptr_cov_mx * apr_wgt_par */
+    int status;
+
+    /* Compute the weighted residual square for the observation */
+    rss_obs = obs_vwv;
+    for(i = 0; i < num_params; i++)
+    {
+        s1 = 0.0;
+        for(j = 0; j < num_params; j++)
+            s1 += (obs_mx[i][j] * sol_Ya[j]);
+        rss_obs += (sol_Ya[i] * s1);
+        rss_obs -= (2.0 * sol_Ya[i] * obs_rgt[i]);
+    }
+
+    /* Compute the weighted residual square for the apriori parameters */
+    rss_apr = 0.0;
+    for(i = 0; i < num_params; i++)
+    {
+        if (apr_wgt_par[i] == 0.0)
+        {
+            IAS_LOG_ERROR("Attempting to divide by zero");
+            return ERROR;
+        }
+        s1 = apr_corr[i] / apr_wgt_par[i] - sol_Ya[i];
+        rss_apr += (s1 * s1 * apr_wgt_par[i]);
+    }
+
+    /* Allocate memory for arrays */
+    cc1 = malloc(num_params * sizeof(double *));
+    if (cc1 == NULL)
+    {
+        IAS_LOG_ERROR("Allocating memory for covariance matrix 1");
+        return ERROR;
+    }
+    cc2 = malloc(num_params * sizeof(double *));
+    if (cc2 == NULL)
+    {
+        free(cc1);
+        IAS_LOG_ERROR("Allocating memory for covariance matrix 2");
+        return ERROR;
+    }
+    for (i = 0; i < num_params; i++)
+    {
+        cc1[i] = malloc(num_params * sizeof(double));
+        if (cc1[i] == NULL)
+        {
+            free(cc1);
+            free(cc2);
+            for (k = 0; k < i; k++)
+            {
+                free(cc1[k]);
+                free(cc2[k]);
+            }
+            IAS_LOG_ERROR("Allocating memory for 2nd dimension of "
+                "covariance matrix 1");
+            return ERROR;
+        }
+        for (j = 0; j < num_params; j++)
+            cc1[i][j] = 0.0;
+        cc2[i] = malloc(num_params * sizeof(double));
+        if (cc2[i] == NULL)
+        {
+            IAS_LOG_ERROR("Allocating memory for 2nd dimension of "
+                "covariance matrix 2");
+            free(cc1);
+            free(cc2);
+            free(cc1[i]);
+            for (k = 0; k < i; k++)
+            {
+                free(cc1[k]);
+                free(cc2[k]);
+            }
+            return ERROR;
+        }
+        for (j = 0; j < num_params; j++)
+            cc2[i][j] = 0.0;
+    }
+
+    /* Compute the trace coefficents for the weight estimate equation */
+    for(i = 0; i < num_params; i++)
+    {
+        for(j = 0; j < num_params; j++)
+        {
+            cc2[i][j] = ptr_cov_mx[i][j] * apr_wgt_par[j];
+            for(k = 0; k < num_params; k++)
+            {
+                cc1[i][j] += (ptr_cov_mx[i][k] * obs_mx[k][j]);
+            }
+        }
+    }
+
+    s1 = obs_num; 
+    s2 = num_params;
+    s12 = 0.0;
+    for(i = 0; i < num_params; i++)
+    {
+        /* s1 = ngcp - 2tr[cc1] + tr[cc1 * cc1] */
+        s1 -= (2.0 * cc1[i][i]);
+        /* s2 = n_aprior - 2tr[cc2] + tr[cc2 * cc2] */
+        s2 -= (2.0 * cc2[i][i]);
+        for(k = 0; k < num_params; k++)
+        {
+            s1 += (cc1[i][k] * cc1[k][i]);      
+            s2 += (cc2[i][k] * cc2[k][i]);
+            /* s12 = tr[cc1 * cc2] */
+            s12 += (cc1[i][k] * cc2[k][i]);
+        }
+    }
+
+    /* Free up previously-allocated memory */
+    for(i = 0; i < num_params; i++)
+    {
+        free(cc1[i]);
+        free(cc2[i]);
+    }
+    free(cc1);
+    free(cc2);
+
+    /* Solve the following equation for the variance factors */
+    ss1 = s1 * s2 - s12 * s12;
+    *wgt_fact_obs = (rss_obs * s2 - rss_apr * s12) / ss1;
+    *wgt_fact_apr = (rss_apr * s1 - rss_obs * s12) / ss1;
+
+    /* If the weight factors are less than or equal to zero, the minimum
+       quadratic solution failed, so return SUCCESS to the caller and set
+       the post_sig value to zero.  The caller uses the value of zero to
+       distinguish between actual errors (divide by zero) and the ability to
+       arrive at a solution. */
+    if(*wgt_fact_obs <= 0.0 || *wgt_fact_apr <= 0.0)
+    {
+        *post_sig = 0.0;
+        return SUCCESS;
+    }
+
+    /* If the least squares fails return zero and SUCCESS to the caller so
+       another solution my be tried */
+    status = solve_weighted_least_square(obs_mx, obs_rgt, apr_wgt_par, apr_corr,
+            num_params, 1.0 / (*wgt_fact_obs), 1.0 / (*wgt_fact_apr),
+            ptr_cov_mx, sol_Ya);
+    if (status != SUCCESS)
+    {
+        *post_sig = 0.0;
+        return SUCCESS;
+    }
+
+    *post_sig = rss_obs;
+
+    return SUCCESS;
+}

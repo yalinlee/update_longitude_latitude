@@ -1,0 +1,100 @@
+/******************************************************************************
+NAME:           update_observe_angle
+
+PURPOSE:        Update the satellite state vector and the look angles
+                corresponding to each GCP, according to the correction 
+                parameters, for the purpose of iteration.
+
+RETURN VALUE:
+SUCCESS         Successfully updated the vector
+ERROR           Error occurred; vector was not updated
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int update_observe_angle
+(
+    int num_gcp,                    /* I: Number of GCPs in the correction
+                                          solution */
+    const double tot_Yb[NPARMS],    /* I: Total estimate vector */
+    double ref_time,                /* I: Reference time for correction
+                                          (seconds) */
+    GCP_STRUCT gcp_struct[]         /* I/O: Structure of GCP information updated
+                                            for the satpos, satvel, delta,
+                                            and psi */
+)
+{
+    int i;                    /* Looping variables */
+    /* Satellite ephemeris state vectors */
+    IAS_VECTOR pos_corr;      /* Orbit shift correction in OB system (meters) */
+    IAS_VECTOR vel_corr;      /* Velocity change in OB system
+                                 (meters/seconds) */
+    IAS_VECTOR pos_chg;       /* Position vector change at diff_time (meters) */
+    /* Satellite attitude vectors */
+    IAS_VECTOR att_corr;      /* Attitude angle perturbation (micro-radians) */
+    IAS_VECTOR att_rate_corr; /* Attitude rate (micro-radians/second) */
+    IAS_VECTOR att_chg;       /* Attitude vector change at diff_time
+                                 (micro-radians) */
+    double diff_time;         /* Time difference from refer time (seconds) */
+    int status;
+
+    /* Extract the correction parameters from the solution vectors */
+    /* Orbit corrections */
+    pos_corr.x = tot_Yb[3];
+    pos_corr.y = tot_Yb[4];
+    pos_corr.z = tot_Yb[5];
+    vel_corr.x = tot_Yb[9];
+    vel_corr.y = tot_Yb[10];
+    vel_corr.z = tot_Yb[11];
+
+    /* Attitude corrections */
+    att_corr.x = tot_Yb[0];
+    att_corr.y = tot_Yb[1];
+    att_corr.z = tot_Yb[2];
+    att_rate_corr.x = tot_Yb[6];
+    att_rate_corr.y = tot_Yb[7];
+    att_rate_corr.z = tot_Yb[8];
+
+    /* Loop over all GCPs */
+    for(i = 0; i < num_gcp; i++)
+    {
+        /* skip invalid points */
+        if (gcp_struct[i].accept_flag == INVALID_POINT)
+            continue;
+
+        /* Calculate orbit perturbation and update the orbit state vector */
+        diff_time = gcp_struct[i].time - ref_time;
+
+        /* Calculate the orbit position change at time dt due to position
+           and velocity perturbation, in OB system */
+        pos_chg.x = pos_corr.x + vel_corr.x * diff_time;
+        pos_chg.y = pos_corr.y + vel_corr.y * diff_time;
+        pos_chg.z = pos_corr.z + vel_corr.z * diff_time;
+
+        status = update_ephemeris(&pos_chg, &vel_corr, &(gcp_struct[i].satpos),
+                &(gcp_struct[i].satvel));
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Occurred in updating the ephemeris data");
+            return ERROR;
+        }
+
+        /* Calculate the attitude change at time diff_time due to
+           attitude and its rate perturbation */
+        att_chg.x = att_corr.x + att_rate_corr.x * diff_time;
+        att_chg.y = att_corr.y + att_rate_corr.y * diff_time;
+        att_chg.z = att_corr.z + att_rate_corr.z * diff_time;
+
+        update_look_angle(&(gcp_struct[i].satatt), &att_chg,
+                &(gcp_struct[i].delta), &(gcp_struct[i].psi));
+    }
+
+    return SUCCESS;
+}

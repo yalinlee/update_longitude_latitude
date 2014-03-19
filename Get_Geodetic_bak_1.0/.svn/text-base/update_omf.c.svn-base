@@ -1,0 +1,97 @@
+/**************************************************************************
+ Name:          update_omf
+
+ Purpose:       Adds the precision model file name to the OMF file.
+
+ Returns:       SUCCESS or ERROR
+
+ Notes:         If precision processing did not come up with a precision
+                solution then we write out the systematic filename as the next
+                processing pass level model file.
+***************************************************************************/
+#include <limits.h>
+#include <string.h>
+#include "ias_const.h"
+#include "ias_parm.h"
+#include "ias_parm_standard_parameters.h"
+#include "correct_los_model.h"
+
+int update_omf
+(
+    int precision_succeeded_flag, /* I: Flag indicating if precision solution
+                                        meets minimum success qualifications */
+    int nbr_gcps_used,            /* I: Number of GCPs used */
+    double rms_gcp_fit,           /* I: RMS of final iteration across- and
+                                        along- track residuals */
+    double x_rmse,                /* I: post-fit across track (X) RMSE */
+    double y_rmse                 /* I: post-fit along track (Y) RMSE */
+)
+{
+    int write_count;
+    int write_status;
+    char model_filename[PATH_MAX];   /* Precision or systematic file name */
+    int processing_pass = get_processing_pass();
+
+    /* Setup the structure for the library for the parameter to add to OMF */ 
+    IAS_PARM_DECLARE_TABLE(omf_param_out_table, 7);
+
+    /* PARAM 1: Precision succeeded flag */
+    IAS_PARM_PRECISION_SUCCEEDED_FLAG_FROM_PASS(omf_param_out_table, 
+            &precision_succeeded_flag, sizeof(precision_succeeded_flag),
+            1, processing_pass);
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, PRECISION_SUCCEEDED_FLAG, 1);
+
+    /* PARAM 2: Precision residuals filename */
+    IAS_PARM_PRECISION_RESIDUALS_FILENAME_FROM_PASS(omf_param_out_table, 
+            get_residual_filename(), sizeof(get_residual_filename()),
+            1, processing_pass);
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, PRECISION_RESIDUALS_FILENAME,
+            1);
+
+    /* We need to increment the processing pass */
+    processing_pass++;
+
+    /* PARAM 3: Model filename */
+    if (precision_succeeded_flag)
+        strcpy(model_filename, get_prec_model_filename());
+    else
+        strcpy(model_filename, get_syst_model_filename());
+
+    IAS_PARM_MODEL_FILENAME_FROM_PASS(omf_param_out_table, IAS_PARM_REQUIRED,
+            (char *)model_filename, sizeof(model_filename), 1, processing_pass);
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, MODEL_FILENAME, 1);
+
+    /* PARAM 4: Number of GCP points used by the model  */
+    IAS_PARM_GROUND_CONTROL_POINTS_MODEL(omf_param_out_table, 0, NULL,
+            &nbr_gcps_used, sizeof(nbr_gcps_used));
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, GROUND_CONTROL_POINTS_MODEL,
+            1);
+
+    /* PARAM 5: RMSE for the model */
+    IAS_PARM_GEOMETRIC_RMSE_MODEL(omf_param_out_table, 0, NULL,
+            &rms_gcp_fit, sizeof(rms_gcp_fit));
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, GEOMETRIC_RMSE_MODEL,
+            1);
+
+    /* Write the X and Y post-fit RMSE */
+    IAS_PARM_GEOMETRIC_RMSE_MODEL_Y(omf_param_out_table, 0, NULL,
+            &y_rmse, sizeof(y_rmse), 1);
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, GEOMETRIC_RMSE_MODEL_Y, 1);
+
+    IAS_PARM_GEOMETRIC_RMSE_MODEL_X(omf_param_out_table, 0, NULL,
+            &x_rmse, sizeof(x_rmse), 1);
+    IAS_PARM_SET_COUNT_WRITE(omf_param_out_table, GEOMETRIC_RMSE_MODEL_X, 1);
+
+    /* Use the Parameter File I/O library to update the OMF file */
+    write_count = IAS_PARM_GET_TABLE_SIZE(omf_param_out_table);
+    write_status = ias_parm_update(get_omf_filename(), omf_param_out_table,
+            write_count);
+    if (write_status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing precision model file name to OMF file: %s",
+                get_omf_filename());
+        return ERROR;
+    }
+
+    return SUCCESS;
+}

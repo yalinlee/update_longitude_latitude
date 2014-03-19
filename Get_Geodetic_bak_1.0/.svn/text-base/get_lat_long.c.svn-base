@@ -1,0 +1,68 @@
+/******************************************************************************
+NAME:       get_lat_long
+
+PURPOSE:  Find the latitude/longitude given the line/sample.
+
+RETURNS:  SUCCESS or ERROR
+
+ALGORITHM REFERENCES:
+Original development by Mike Choate.
+
+*******************************************************************************
+                        Property of the U.S. Government
+                            USGS EROS Data Center
+******************************************************************************/
+#include <string.h>
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "ias_geo.h"
+#include "ias_math.h"
+#include "gctp.h"
+#include "correct_los_model.h"
+
+int get_lat_long
+(
+    double line,                /* I: Line */
+    double samp,                /* I: Sample */
+    double dem_ht,              /* I: DEM height at GCP location */
+    double s_major,             /* I: Semi major axis */
+    double flat,                /* I: Flattening of the spheroid */
+    const double *vector_y,     /* I: Coefficient vector for y */
+    const double *vector_x,     /* I: Coefficient vector for x */
+    IAS_VECTOR *pixpos          /* O: Cartesian vector for the coord */
+)
+{
+    double x, y;                    /* X/Y projection point */
+    double lat_rad;                 /* Latitude in radians */
+    double lon_rad;                 /* Longitude in radians */
+    double lat_deg;                 /* Latitude in degrees */
+    double lon_deg;                 /* Longitude in degrees */
+    int status;                     /* Routine return status */
+    const IAS_GEO_PROJ_TRANSFORMATION *map2degrees 
+        = get_proj_transform_map2degrees();
+
+
+    /* Find first order rotation coefficients.  If there is no rotation then
+       this is not needed.  */
+    ias_math_eval_poly(1, vector_y, samp,line, &y);
+    ias_math_eval_poly(1, vector_x, samp,line, &x);
+
+    /* Call GCTP to convert projection coordinate to its corresponding
+       longitude/latitude */
+    status = ias_geo_transform_coordinate(map2degrees, x, y,
+        &lon_deg, &lat_deg);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Converting projection coordinate to latitude and "
+                "longitude");
+        return ERROR;
+    }
+
+    /* Calculate the cartesion vector */
+    lat_rad = ias_math_get_radians_per_degree() * lat_deg;
+    lon_rad = ias_math_get_radians_per_degree() * lon_deg;
+    ias_geo_convert_geod2cart(lat_rad, lon_rad, dem_ht, s_major, flat, pixpos);
+
+    return SUCCESS;
+}

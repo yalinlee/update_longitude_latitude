@@ -1,0 +1,84 @@
+/******************************************************************************
+NAME:           get_correction
+
+PURPOSE:        Extract the estimated correction parameters and their 
+                covariance matrix from the Weighted Least Square solution,
+                update the correction parameter structure;
+
+RETURNS:        none
+*******************************************************************************
+                       Property of the U.S. Government
+                               NASA/GSFC/EDC
+******************************************************************************/
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+void get_correction
+(
+    double ref_time,                /* I: Reference time for the corrections,
+                                          in seconds of day */
+    PARAM_FLAG param_flag,          /* I: Option flag for parameterization:
+        "att_orb": estimate attitude plus height, with rates
+        "eph_yaw": estimate sat position plus yaw, with rates
+        "both": estimate all attitude and ephemeris and rates
+         "weight": estimate both with MINQUE and MLHE weight
+         factor estimation - added by JCS 1/97 */
+    double cov_mx[NPARMS][NPARMS],  /* I: Inverse of normal matrix for alpha
+                                          and beta */
+    double Tot_Yb[NPARMS],          /* I: Solution vector */
+    const double post_sig,          /* I: Posteriory sigma for noise level */
+    PRECISION_CORRECTIONS *precision_corr 
+                                    /* O: Structure of precision corrections */
+)
+{
+    int i, j;           /* Loop counters */
+
+    /* Record the reference time for the correction */
+    precision_corr->time = ref_time;
+
+    /* Extract satellite position corrections */
+    precision_corr->satpos.x += Tot_Yb[3];
+    precision_corr->satpos.y += Tot_Yb[4];
+    precision_corr->satpos.z += Tot_Yb[5];
+
+    /* Extract satellite velocity corrections */
+    precision_corr->satvel.x += Tot_Yb[9];
+    precision_corr->satvel.y += Tot_Yb[10];
+    precision_corr->satvel.z += Tot_Yb[11];
+
+    /* Extract satellite attutide angle corrections */
+    precision_corr->rpyangle.x += Tot_Yb[0];
+    precision_corr->rpyangle.y += Tot_Yb[1];
+    precision_corr->rpyangle.z += Tot_Yb[2];
+
+    /* Extract satellite attitude angle rate corrections */
+    precision_corr->rpyrate.x += Tot_Yb[6];
+    precision_corr->rpyrate.y += Tot_Yb[7];
+    precision_corr->rpyrate.z += Tot_Yb[8];
+
+    /* Record the covariance matrix for the correction parameters */
+    if (param_flag == WEIGHT)
+    {
+        /* Covariance matrix from the WLS solution 
+           with MINQUE or MLH estimated weights */
+        for(i = 0; i < NPARMS; i++)
+        {
+            for(j = 0; j < NPARMS; j++)
+            {
+                precision_corr->cov[i][j] = cov_mx[i][j];
+            }
+        }
+    }
+    else
+    {
+        /* Covarance matrix from the WLS solution 
+           scaled by posterior variance */
+        for(i = 0; i < NPARMS; i++)
+        {
+            for(j = 0; j < NPARMS; j++)
+            {
+                precision_corr->cov[i][j] = post_sig * cov_mx[i][j];
+            }
+        }
+    }
+}

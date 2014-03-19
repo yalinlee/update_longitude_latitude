@@ -1,0 +1,229 @@
+/******************************************************************************
+NAME:           get_gcp_characterization_data
+
+PURPOSE:        Extract the valid GCP information for storage in the 
+                characterization database.
+
+RETURNS:        SUCCESS or ERROR
+
+ALGORITHM REFERENCES:
+LDCM Geometric Algorithm Description Document (ADD)
+******************************************************************************/
+#include <stdlib.h>
+#include <math.h>
+#include <string.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_geo.h"
+#include "ias_gcp.h"
+#include "ias_los_model.h"
+#include "correct_los_model.h"
+
+int get_gcp_characterization_data
+(
+    int numgcp,                         /* I: Total number of GCPs */
+    GCP_STRUCT gcp_struct[],            /* I: Full GCP array */
+    const IAS_EARTH_CHARACTERISTICS *earth,/* I: WGS84 Earth model from model */
+    const double ref_time[],            /* I: Precision solution ref time */
+    int *num_valid_gcp,                 /* I/O: Number of valid GCPs */
+    GCP_CHAR_DATA *gcp_stats            /* O: GCP characterization info */
+)
+{
+    int i;                  /* Loop index */
+    int nvalid;             /* Number of valid GCPs */
+    double gclat;           /* Geocentric latitude */
+    double radius;          /* Target radius */
+    char *id_ptr;           /* Pointer to the point ID in gcp_stats */
+    char *source_ptr;       /* Pointer to the source in gcp_stats */
+    int status;             /* Routine return status */
+
+    /* Process the GCP records */
+    nvalid = 0;
+    id_ptr = gcp_stats->point_id;
+    source_ptr = gcp_stats->gcp_source;
+
+    for (i = 0; i < numgcp; i++)
+    {
+        if (gcp_struct[i].accept_flag > 0)
+        {
+            if (nvalid >= *num_valid_gcp)
+            {
+                IAS_LOG_WARNING("Found more valid GCPs than expected.");
+                break;
+            }
+            /* Since the database routines expect a big block of memory
+               need to use pointers to step through the allocated block for
+               these string values */
+            strcpy(id_ptr, gcp_struct[i].point_id);
+            strcpy(source_ptr, gcp_struct[i].chip_source);
+
+            /* The rest can be accessed as normal arrays */
+            gcp_stats->gcp_time_year[nvalid] = (int)floor(ref_time[0]+0.5);
+            gcp_stats->gcp_time_day[nvalid] = (int)floor(ref_time[1]+0.5);
+            gcp_stats->gcp_time_seconds[nvalid] = gcp_struct[i].time;
+            gcp_stats->ephem_x[nvalid] = gcp_struct[i].satpos0.x;
+            gcp_stats->ephem_y[nvalid] = gcp_struct[i].satpos0.y;
+            gcp_stats->ephem_z[nvalid] = gcp_struct[i].satpos0.z;
+            gcp_stats->ephem_xrate[nvalid] = gcp_struct[i].satvel0.x;
+            gcp_stats->ephem_yrate[nvalid] = gcp_struct[i].satvel0.y;
+            gcp_stats->ephem_zrate[nvalid] = gcp_struct[i].satvel0.z;
+            gcp_stats->roll[nvalid] = gcp_struct[i].satatt.x;
+            gcp_stats->pitch[nvalid] = gcp_struct[i].satatt.y;
+            gcp_stats->yaw[nvalid] = gcp_struct[i].satatt.z;
+            status = ias_geo_convert_cart2sph(&(gcp_struct[i].gcp_position),
+                    &gclat, &gcp_stats->true_gcp_lon[nvalid], &radius);
+            if ( status != SUCCESS )
+            {
+                IAS_LOG_ERROR("Converting GCP coordinate to spherical "
+                    "coordinate");
+                return ERROR;
+            }
+            status = ias_geo_convert_geocentric_height_to_geodetic(gclat,
+                    radius, earth, &gcp_stats->true_gcp_lat[nvalid],
+                    &gcp_stats->true_gcp_height[nvalid]);
+            if ( status != SUCCESS )
+            {
+                IAS_LOG_ERROR("Converting the GCP true geocentric height "
+                    "to geodetic");
+                return ERROR;
+            }
+            status = ias_geo_convert_cart2sph(&(gcp_struct[i].pixpos), &gclat,
+                    &gcp_stats->apparent_gcp_lon[nvalid], &radius);
+            if ( status != SUCCESS )
+            {
+                IAS_LOG_ERROR("Converting pixel position coordinate to "
+                    "spherical coordinate");
+                return ERROR;
+            }
+            status = ias_geo_convert_geocentric_height_to_geodetic(gclat,
+                    radius, earth, &gcp_stats->apparent_gcp_lat[nvalid],
+                    &gcp_stats->apparent_gcp_height[nvalid]);
+            if ( status != SUCCESS )
+            {
+                IAS_LOG_ERROR("Converting the GCP apparent geocentric height "
+                    "to geodetic");
+                return ERROR;
+            }
+            nvalid++;
+
+            /* Point to the next ID and source */
+            id_ptr += IAS_GCP_ID_SIZE;
+            source_ptr += IAS_GCP_SOURCE_SIZE;
+        }
+    }
+
+    if (nvalid < *num_valid_gcp)
+    {
+        IAS_LOG_WARNING("Found fewer valid GCPs than expected.");
+    }
+    *num_valid_gcp = nvalid;
+
+    return SUCCESS;
+}
+
+/*---------------------------------------------------------------
+  Routine to allocate memory for the GCP stats structure
+
+  RETURNS: pointer to allocated structure or NULL
+---------------------------------------------------------------*/
+GCP_CHAR_DATA *allocate_gcp_stats
+(
+    int number_of_gcps  /* I: Number of elements to allocate */
+)
+{
+    GCP_CHAR_DATA *gcp_stats = calloc(1, sizeof(GCP_CHAR_DATA));
+    if (!gcp_stats)
+    {
+        IAS_LOG_ERROR("Allocating the GCP statistics structure");
+        return NULL;
+    }
+
+    gcp_stats->point_id = malloc(number_of_gcps * sizeof(char)
+            * IAS_GCP_ID_SIZE);
+    gcp_stats->gcp_source = malloc(number_of_gcps * sizeof(char)
+            * IAS_GCP_SOURCE_SIZE);
+    gcp_stats->gcp_time_year = malloc(number_of_gcps * sizeof(int));
+    gcp_stats->gcp_time_day = malloc(number_of_gcps * sizeof(int));
+    gcp_stats->gcp_time_seconds = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_x = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_y = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_z = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_xrate = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_yrate = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->ephem_zrate = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->roll = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->pitch = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->yaw = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->true_gcp_lat = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->true_gcp_lon = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->true_gcp_height = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->apparent_gcp_lat = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->apparent_gcp_lon = malloc(number_of_gcps * sizeof(double));
+    gcp_stats->apparent_gcp_height = malloc(number_of_gcps * sizeof(double));
+
+    if (gcp_stats->point_id == NULL ||
+            gcp_stats->gcp_source == NULL ||
+            gcp_stats->gcp_time_year == NULL ||
+            gcp_stats->gcp_time_day == NULL ||
+            gcp_stats->gcp_time_seconds == NULL ||
+            gcp_stats->ephem_x == NULL ||
+            gcp_stats->ephem_y == NULL ||
+            gcp_stats->ephem_z == NULL ||
+            gcp_stats->ephem_xrate == NULL ||
+            gcp_stats->ephem_yrate == NULL ||
+            gcp_stats->ephem_zrate == NULL ||
+            gcp_stats->roll == NULL ||
+            gcp_stats->pitch == NULL ||
+            gcp_stats->yaw == NULL ||
+            gcp_stats->true_gcp_lat == NULL ||
+            gcp_stats->true_gcp_lon == NULL ||
+            gcp_stats->true_gcp_height == NULL ||
+            gcp_stats->apparent_gcp_lat == NULL ||
+            gcp_stats->apparent_gcp_lon == NULL ||
+            gcp_stats->apparent_gcp_height == NULL)
+    {
+        IAS_LOG_ERROR("Allocating GCP statistics structure members");
+        free_gcp_stats(gcp_stats);
+        return NULL;
+    }
+
+    return gcp_stats;
+}
+
+
+/*---------------------------------------------------------------
+   Routine to free the memory allocated by allocate_gcp_stats
+
+   Returns: none
+---------------------------------------------------------------*/
+void free_gcp_stats
+(
+    GCP_CHAR_DATA *gcp_stats    /* I: pointer to structure to free */
+)
+{
+    if (gcp_stats)
+    {
+        free(gcp_stats->point_id);
+        free(gcp_stats->gcp_source);
+        free(gcp_stats->gcp_time_year);
+        free(gcp_stats->gcp_time_day);
+        free(gcp_stats->gcp_time_seconds);
+        free(gcp_stats->ephem_x);
+        free(gcp_stats->ephem_y);
+        free(gcp_stats->ephem_z);
+        free(gcp_stats->ephem_xrate);
+        free(gcp_stats->ephem_yrate);
+        free(gcp_stats->ephem_zrate);
+        free(gcp_stats->roll);
+        free(gcp_stats->pitch);
+        free(gcp_stats->yaw);
+        free(gcp_stats->true_gcp_lat);
+        free(gcp_stats->true_gcp_lon);
+        free(gcp_stats->true_gcp_height);
+        free(gcp_stats->apparent_gcp_lat);
+        free(gcp_stats->apparent_gcp_lon);
+        free(gcp_stats->apparent_gcp_height);
+
+        free(gcp_stats);
+    }
+}

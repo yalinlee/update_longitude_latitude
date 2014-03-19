@@ -1,0 +1,38 @@
+/******************************************************************************
+NAME:           accum_normal_equation
+
+PURPOSE:        Accumulate the normal equation of the least-square problem
+                by adding one observation
+
+RETURNS:        none
+*******************************************************************************
+                       Property of the U.S. Government
+                            USGS EROS Data Center
+******************************************************************************/
+#include "correct_los_model.h"
+
+void accum_normal_equation
+(
+    const double H[],   /* I: One row vector of partial coefficients */
+    double obs,         /* I: Observation--angle differences in micro radian */
+    int num_params,     /* I: Number of parameters in the problem, or
+                              dimension of H */
+    double obs_wgt,     /* I: Weight for observation obs */
+    double **norm_mx,   /* I/O: The n x n normal matrix updated by accumulating 
+                                H_transpose * obs_wgt * H */
+    double obs_rgt[]    /* I/O: n x 1 right-hand-side array of the normal
+                                equation updated by adding
+                                H_transpose * obs_wgt * obs */
+)
+{
+    int i, j;               /* Looping variables */
+
+    for (i = 0; i < num_params; i++)
+    {
+        for (j = 0; j < num_params; j++)
+        {
+            norm_mx[i][j] += (H[i] * obs_wgt * H[j]);
+        }
+        obs_rgt[i] += (H[i] * obs_wgt * obs);
+    }
+}

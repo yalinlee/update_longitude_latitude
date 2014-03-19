@@ -1,0 +1,129 @@
+/******************************************************************************
+NAME:           calc_alignment 
+
+Purpose:        Use the precision solution to compute the corresponding OLI
+                to attitude control system alignment parameters.
+
+RETURN VALUE:   none
+
+ALGORITHM REFERENCES:
+LDCM Geometric Algorithm Description Document (ADD)
+
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_sensor_model.h"
+#include "ias_math.h"
+#include "database_structures.h"
+#include "correct_los_model.h"
+
+void calc_alignment
+(
+    IAS_SENSOR_LOCATION_MODEL *sensor,      /* I: Sensor location model */
+    PRECISION_CORRECTIONS *precision_corr,  /* I: Precision corrections */
+    const double *ref_time,                 /* I: Precision solution reference
+                                                  time */
+    ALIGNMENT_CHAR_DATA *align_stats        /* O: Alignment information */
+)
+{
+    double attcor[3];           /* Attitude correction from precision 
+                                   solution results converted to radians */
+    double cr, sr;              /* Temporary roll trig function variables */
+    double cp, sp;              /* Temporary pitch trig function variables */
+    double cy, sy;              /* Temporary yaw trig function variables */
+    double Msc[3][3];           /* Spacecraft orientation matrix */
+    double Mpc[3][3];           /* Precision correction matrix */
+    double Mal[3][3];           /* Alignment correction matrix */
+
+    /* Rescale the attitude correction to radians (from micro-radians) */
+    attcor[0] = precision_corr->rpyangle.x * 1.0e-6;
+    attcor[1] = precision_corr->rpyangle.y * 1.0e-6;
+    attcor[2] = precision_corr->rpyangle.z * 1.0e-6;
+
+    /* Compute the precision correction matrix */
+    cr = cos(attcor[0]); sr = sin(attcor[0]);
+    cp = cos(attcor[1]); sp = sin(attcor[1]);
+    cy = cos(attcor[2]); sy = sin(attcor[2]);
+
+    Mpc[0][0] = cp * cy;  
+    Mpc[0][1] = cy * sr * sp + cr * sy;   
+    Mpc[0][2] = sr * sy - sp * cr * cy;
+    Mpc[1][0] = -sy * cp; 
+    Mpc[1][1] = cy * cr - sy * sr * sp;
+    Mpc[1][2] = sp * sy * cr + cy * sr;
+    Mpc[2][0] = sp;
+    Mpc[2][1] = -sr * cp;
+    Mpc[2][2] = cp * cr;
+
+    /* Get the current OLI to ACS alignment matrix from the model */
+    Msc[0][0] = sensor->sensor2acs[0][0];
+    Msc[0][1] = sensor->sensor2acs[0][1];
+    Msc[0][2] = sensor->sensor2acs[0][2];
+    Msc[1][0] = sensor->sensor2acs[1][0];
+    Msc[1][1] = sensor->sensor2acs[1][1];
+    Msc[1][2] = sensor->sensor2acs[1][2];
+    Msc[2][0] = sensor->sensor2acs[2][0];
+    Msc[2][1] = sensor->sensor2acs[2][1];
+    Msc[2][2] = sensor->sensor2acs[2][2];
+
+    /* Compute the composite matrix */
+    ias_math_multiply_3x3_matrix(Mpc, Msc, Mal);
+
+    /* Extract the updated correction parameters */
+    attcor[0] = atan(-Mal[2][1] / Mal[2][2]);
+    attcor[1] = asin(Mal[2][0]);
+    attcor[2] = atan(-Mal[1][0] / Mal[0][0]);
+
+    /* Populate trending structure */
+    align_stats->nbr_gcps_used = precision_corr->num_valid_gcp;
+    align_stats->rms_gcp_fit = sqrt(precision_corr->rms_postfit[0]
+            * precision_corr->rms_postfit[0] + precision_corr->rms_postfit[1]
+            * precision_corr->rms_postfit[1]);
+    align_stats->reference_year = (int)ref_time[0];
+    align_stats->reference_day = (int)ref_time[1];
+    align_stats->reference_time = ref_time[2];
+    align_stats->align_angle_roll = attcor[0] * 1.0e6;
+    align_stats->align_angle_pitch = attcor[1] * 1.0e6;
+    align_stats->align_angle_yaw = attcor[2] * 1.0e6;
+    align_stats->pos_bias_x = precision_corr->satpos.x;
+    align_stats->pos_bias_y = precision_corr->satpos.y;
+    align_stats->pos_bias_z = precision_corr->satpos.z;
+    align_stats->roll_roll_cov = precision_corr->cov[0][0];
+    align_stats->roll_pitch_cov = precision_corr->cov[0][1];
+    align_stats->roll_yaw_cov = precision_corr->cov[0][2];
+    align_stats->roll_xpos_cov = precision_corr->cov[0][3];
+    align_stats->roll_ypos_cov = precision_corr->cov[0][4];
+    align_stats->roll_zpos_cov = precision_corr->cov[0][5];
+    align_stats->pitch_roll_cov = precision_corr->cov[1][0];
+    align_stats->pitch_pitch_cov = precision_corr->cov[1][1];
+    align_stats->pitch_yaw_cov = precision_corr->cov[1][2];
+    align_stats->pitch_xpos_cov = precision_corr->cov[1][3];
+    align_stats->pitch_ypos_cov = precision_corr->cov[1][4];
+    align_stats->pitch_zpos_cov = precision_corr->cov[1][5];
+    align_stats->yaw_roll_cov = precision_corr->cov[2][0];
+    align_stats->yaw_pitch_cov = precision_corr->cov[2][1];
+    align_stats->yaw_yaw_cov = precision_corr->cov[2][2];
+    align_stats->yaw_xpos_cov = precision_corr->cov[2][3];
+    align_stats->yaw_ypos_cov = precision_corr->cov[2][4];
+    align_stats->yaw_zpos_cov = precision_corr->cov[2][5];
+    align_stats->xpos_roll_cov = precision_corr->cov[3][0];
+    align_stats->xpos_pitch_cov = precision_corr->cov[3][1];
+    align_stats->xpos_yaw_cov = precision_corr->cov[3][2];
+    align_stats->xpos_xpos_cov = precision_corr->cov[3][3];
+    align_stats->xpos_ypos_cov = precision_corr->cov[3][4];
+    align_stats->xpos_zpos_cov = precision_corr->cov[3][5];
+    align_stats->ypos_roll_cov = precision_corr->cov[4][0];
+    align_stats->ypos_pitch_cov = precision_corr->cov[4][1];
+    align_stats->ypos_yaw_cov = precision_corr->cov[4][2];
+    align_stats->ypos_xpos_cov = precision_corr->cov[4][3];
+    align_stats->ypos_ypos_cov = precision_corr->cov[4][4];
+    align_stats->ypos_zpos_cov = precision_corr->cov[4][5];
+    align_stats->zpos_roll_cov = precision_corr->cov[5][0];
+    align_stats->zpos_pitch_cov = precision_corr->cov[5][1];
+    align_stats->zpos_yaw_cov = precision_corr->cov[5][2];
+    align_stats->zpos_xpos_cov = precision_corr->cov[5][3];
+    align_stats->zpos_ypos_cov = precision_corr->cov[5][4];
+    align_stats->zpos_zpos_cov = precision_corr->cov[5][5];
+}

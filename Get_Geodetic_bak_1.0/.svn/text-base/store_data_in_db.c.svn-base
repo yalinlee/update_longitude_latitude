@@ -1,0 +1,456 @@
+/*---------------------------------------------------------------------------
+NAME:    store_data_in_db.c
+
+PURPOSE: Two routines to store data in the characterization database.
+         Routine to open the database connection and one to close.
+
+         connect_to_db
+         disconnect_from_db
+         store_solution_alignment_in_db
+         store_gcp_residuals_in_db
+
+---------------------------------------------------------------------------*/
+#include <stdlib.h>
+#include <stdio.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_miscellaneous.h"
+#include "ias_gcp.h"
+#include "ias_db.h"
+#include "ias_db_insert.h"
+#include "ias_db_get_connect_info.h"
+#include "database_structures.h"
+#include "correct_los_model.h"
+
+#define SQL_QUERYLEN 256
+
+static void print_gcp_residuals
+(
+    GCP_CHAR_DATA *data,    /* I: Data to store in database */
+    int number_of_records   /* I: Number of records to store */
+);
+
+static void print_solution_alignment
+(
+    ALIGNMENT_CHAR_DATA *data   /* I: Data to store in database */
+);
+
+static struct ias_db_connection *db = NULL; /* Database connection */
+
+/*---------------------------------------------------------------------------
+NAME:    connect_to_db
+
+PURPOSE: Establish a database connection
+
+RETURNS: SUCCESS or ERROR
+---------------------------------------------------------------------------*/
+int connect_to_db(void)
+{
+    char *database_name = NULL;
+    char *user_name = NULL;
+    char *password = NULL;
+    char *host = NULL;
+    int status;
+
+    /* Get the database connection info */
+    status = ias_db_get_connect_info(&database_name, &user_name, &password,
+            &host);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting database connection info");
+        ias_db_close_database_lib();
+        return ERROR;
+    }
+
+    /* Connect to the database for a transaction */
+    db = ias_db_connect_with_transaction(database_name, user_name, password,
+            host);
+
+    /* Free the resources before checking the connection */
+    free(database_name);
+    free(user_name);
+    free(password);
+    free(host);
+
+    /* Check the connection */
+    if (!db)
+    {
+        IAS_LOG_ERROR("Connecting to database");
+        ias_db_close_database_lib();
+        return ERROR;
+    }
+
+    return SUCCESS;
+}  /* END connect_to_db */
+
+/*---------------------------------------------------------------------------
+NAME:    disconnect_from_database
+
+PURPOSE: Disconnect from the database, commiting the transaction if needed
+
+RETURNS: SUCCESS or ERROR
+---------------------------------------------------------------------------*/
+int disconnect_from_database
+(
+    int commit_flag     /* I: Flag to indicate a commit should be done
+                              1 = IAS_DB_COMMIT
+                              0 = IAS_DB_ROLLBACK */
+)
+{
+    int status = SUCCESS;
+
+    if (db == NULL)
+        return status;
+
+    status = ias_db_disconnect_with_transaction( db, commit_flag );
+    if (status != SUCCESS)
+        IAS_LOG_ERROR("Committing disconnecting from database");
+
+    return status;
+}  /* END disconnect_from_database */
+
+/*---------------------------------------------------------------------------
+NAME:    store_solution_alignment_in_db
+
+PURPOSE: Store the solution/alignment characterization in database
+
+RETURNS: SUCCESS or ERROR
+---------------------------------------------------------------------------*/
+int store_solution_alignment_in_db
+(
+    ALIGNMENT_CHAR_DATA *data   /* I: Data to store in database */
+)
+{
+    int status;
+    int table_size;
+    struct ias_db_query *query = NULL;
+    char query_string[SQL_QUERYLEN];
+    char error_message[IAS_SQL_RTN_MSGLEN];
+
+    /* If there is no database connection, open one */
+    if (db == NULL)
+    {
+        status = connect_to_db();
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("store_solution_alignment_in_db called without a "
+                    "database connection");
+            return ERROR;
+        }
+    }
+
+    /* Only does something if log level set to IAS_LOG_LEVEL_DEBUG */
+    if (IAS_LOG_DEBUG_ENABLED())
+        print_solution_alignment(data);
+
+    /* build the table of data to write to DB */
+    IAS_DB_INSERT_TABLE table[] =
+    {
+        IAS_DB_TABLE_STRUCT_STRING(data, geometric_wo_common_id),
+        IAS_DB_TABLE_STRUCT_STRING(data, gcp_source),
+        IAS_DB_TABLE_STRUCT_INT(data, nbr_gcps_used),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, outlier_threshold),
+        IAS_DB_TABLE_STRUCT_INT(data, reference_year),
+        IAS_DB_TABLE_STRUCT_INT(data, reference_day),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, reference_time),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, rms_gcp_fit),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, align_angle_roll),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, align_angle_pitch),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, align_angle_yaw),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pos_bias_x),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pos_bias_y),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pos_bias_z),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, roll_zpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, pitch_zpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, yaw_zpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, xpos_zpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, ypos_zpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_roll_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_pitch_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_yaw_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_xpos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_ypos_cov),
+        IAS_DB_TABLE_STRUCT_DOUBLE(data, zpos_zpos_cov)
+    };
+    table_size = sizeof(table)/sizeof(IAS_DB_INSERT_TABLE);
+
+    /* Get the common ID associated with this work order */
+    status = ias_misc_get_char_id(db,
+            "GEOMETRIC_WORK_ORDER_COMMON", "geometric_wo_common_id",
+            get_work_order_id(), data->geometric_wo_common_id);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Retrieving geometric_wo_common_id for work order: %s",
+                get_work_order_id());
+        return ERROR;
+    }
+
+    /* Delete previous records */
+    snprintf(query_string, sizeof(query_string) - 1, "delete from "
+            "precision_model_correction where geometric_wo_common_id=%s",
+            data->geometric_wo_common_id);
+    query = ias_db_perform_query(db, query_string);
+    if (!ias_db_query_was_successful(query))
+    {
+        ias_db_query_get_error_message(query, error_message,
+                sizeof(error_message));
+        IAS_LOG_ERROR("Query of precision_model_correction failed: %s",
+                error_message);
+        IAS_LOG_ERROR("Deleting records from precision_model_correction "
+                "where geometric_wo_common_id=%s",
+                data->geometric_wo_common_id);
+        ias_db_query_close(query);
+        return ERROR;
+    }
+    ias_db_query_close(query);
+    query = NULL;
+
+    /* Insert the data into the database */
+    status = ias_db_insert_using_table(db, "precision_model_correction", table,
+            table_size, 1);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Insert into precision_model_correction failed");
+        return ERROR;
+    }
+
+    return SUCCESS;
+}  /* END store_solution_alignment_in_db */
+
+/*---------------------------------------------------------------------------
+NAME:    store_gcp_residuals_in_db
+
+PURPOSE: Stores the GCP residuals in the database
+
+RETURNS: SUCCESS or ERROR
+---------------------------------------------------------------------------*/
+int store_gcp_residuals_in_db
+(
+    GCP_CHAR_DATA *data,    /* I: Data to store in database */
+    int number_of_records   /* I: Number of records to store */
+)
+{
+    int status;
+    int table_size;
+    struct ias_db_query *query = NULL;
+    char query_string[SQL_QUERYLEN];
+    char error_message[IAS_SQL_RTN_MSGLEN];
+
+    /* If there is no database connection, open one */
+    if (db == NULL)
+    {
+        status = connect_to_db();
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Could not get a database connection in "
+                    "store_gcp_residuals_in_db");
+            return ERROR;
+        }
+    }
+
+    /* Only does something if log level set to IAS_LOG_LEVEL_DEBUG */
+    if (IAS_LOG_DEBUG_ENABLED())
+        print_gcp_residuals(data, number_of_records);
+
+    /* Build the table of data to write to DB */
+    IAS_DB_INSERT_TABLE table[] =
+    {
+        IAS_DB_TABLE_STRUCT_STRING(data, geometric_wo_common_id),
+        IAS_DB_TABLE_STRUCT_STRING_ARRAY(data, point_id, IAS_GCP_ID_SIZE),
+        IAS_DB_TABLE_STRUCT_STRING_ARRAY(data, gcp_source, IAS_GCP_SOURCE_SIZE),
+        IAS_DB_TABLE_STRUCT_INT_ARRAY(data, gcp_time_year),
+        IAS_DB_TABLE_STRUCT_INT_ARRAY(data, gcp_time_day),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, gcp_time_seconds),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_x),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_y),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_z),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_xrate),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_yrate),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, ephem_zrate),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, roll),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, pitch),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, yaw),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, true_gcp_lat),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, true_gcp_lon),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, true_gcp_height),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, apparent_gcp_lat),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, apparent_gcp_lon),
+        IAS_DB_TABLE_STRUCT_DOUBLE_ARRAY(data, apparent_gcp_height)
+    };
+    table_size = sizeof(table) / sizeof(IAS_DB_INSERT_TABLE);
+
+    /* Get the common ID associated with this work order */
+    status = ias_misc_get_char_id(db,
+            "GEOMETRIC_WORK_ORDER_COMMON", "geometric_wo_common_id",
+            get_work_order_id(), data->geometric_wo_common_id);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Retrieving geometric_wo_common_id for work order: %s",
+                get_work_order_id());
+        return ERROR;
+    }
+
+    /* Delete previous records */
+    snprintf(query_string, sizeof(query_string) - 1, "delete from "
+            "precision_model_corr_gcps where geometric_wo_common_id=%s",
+            data->geometric_wo_common_id);
+    query = ias_db_perform_query(db, query_string);
+    if (!ias_db_query_was_successful(query))
+    {
+        ias_db_query_get_error_message(query, error_message,
+                sizeof(error_message));
+        IAS_LOG_ERROR("Query of precision_model_corr_gcps failed: %s",
+                error_message);
+        IAS_LOG_ERROR("Deleting records from precision_model_corr_gcps "
+                "where geometric_wo_common_id=%s",
+                data->geometric_wo_common_id);
+        ias_db_query_close(query);
+        return ERROR;
+    }
+    ias_db_query_close(query);
+    query = NULL;
+
+    /* Insert the data into the database */
+    status = ias_db_insert_using_table(db, "precision_model_corr_gcps",
+            table, table_size, number_of_records);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Insert into precision_model_corr_gcps failed");
+        return ERROR;
+    }
+
+    return SUCCESS;
+}  /* END store_gcp_residuals_in_db */
+
+/*---------------------------------------------------------------------------
+NAME:    print_gcp_residuals
+
+PURPOSE: Prints the GCP residuals data to standard out for use in
+         regression testing
+
+RETURNS: none
+---------------------------------------------------------------------------*/
+static void print_gcp_residuals
+(
+    GCP_CHAR_DATA *data,    /* I: Data to store in database */
+    int number_of_records   /* I: Number of records to store */
+)
+{
+    int i;
+    char *id_ptr = data->point_id;
+    char *source_ptr = data->gcp_source;
+
+    for (i = 0; i < number_of_records; i++)
+    {
+        printf("%s,", id_ptr);
+        printf(" %04d,", data->gcp_time_year[i]);
+        printf(" %03d,", data->gcp_time_day[i]);
+        printf(" %12.6lf,", data->gcp_time_seconds[i]);
+        printf(" %12.3lf,", data->ephem_x[i]);
+        printf(" %12.3lf,", data->ephem_y[i]);
+        printf(" %12.3lf,", data->ephem_z[i]);
+        printf(" %12.6lf,", data->ephem_xrate[i]);
+        printf(" %12.6lf,", data->ephem_yrate[i]);
+        printf(" %12.6lf,", data->ephem_zrate[i]);
+        printf(" %e,", data->roll[i]);
+        printf(" %e,", data->pitch[i]);
+        printf(" %e,", data->yaw[i]);
+        printf(" %15.8e,", data->true_gcp_lat[i]);
+        printf(" %15.8e,", data->true_gcp_lon[i]);
+        printf(" %8.3lf,", data->true_gcp_height[i]);
+        printf(" %15.8e,", data->apparent_gcp_lat[i]);
+        printf(" %15.8e,", data->apparent_gcp_lon[i]);
+        printf(" %8.3lf,", data->apparent_gcp_height[i]);
+        printf(" %s\n", source_ptr);
+
+        id_ptr += IAS_GCP_ID_SIZE;
+        source_ptr += IAS_GCP_SOURCE_SIZE;
+    }
+}
+
+/*---------------------------------------------------------------------------
+NAME:    print_solution_alignment
+
+PURPOSE: Prints the solution alignment data to standard out for use in
+         regression testing
+
+RETURNS: none
+---------------------------------------------------------------------------*/
+static void print_solution_alignment
+(
+    ALIGNMENT_CHAR_DATA *data   /* I: Data to store in database */
+)
+{
+    printf("For ID: ");
+    printf(" %s,", data->gcp_source);
+    printf(" %d,", data->nbr_gcps_used);
+    printf(" %5.3lf,", data->outlier_threshold);
+    printf(" %7.3lf,", data->rms_gcp_fit);
+    printf(" %e,", data->align_angle_roll);
+    printf(" %e,", data->align_angle_pitch);
+    printf(" %e,", data->align_angle_yaw);
+    printf(" %e,", data->pos_bias_x);
+    printf(" %e,", data->pos_bias_y);
+    printf(" %e,", data->pos_bias_z);
+    printf(" %.10e,", data->roll_roll_cov);
+    printf(" %.10e,", data->roll_pitch_cov);
+    printf(" %.10e,", data->roll_yaw_cov);
+    printf(" %.10e,", data->roll_xpos_cov);
+    printf(" %.10e,", data->roll_ypos_cov);
+    printf(" %.10e,", data->roll_zpos_cov);
+    printf(" %.10e,", data->pitch_roll_cov);
+    printf(" %.10e,", data->pitch_pitch_cov);
+    printf(" %.10e,", data->pitch_yaw_cov);
+    printf(" %.10e,", data->pitch_xpos_cov);
+    printf(" %.10e,", data->pitch_ypos_cov);
+    printf(" %.10e,", data->pitch_zpos_cov);
+    printf(" %.10e,", data->yaw_roll_cov);
+    printf(" %.10e,", data->yaw_pitch_cov);
+    printf(" %.10e,", data->yaw_yaw_cov);
+    printf(" %.10e,", data->yaw_xpos_cov);
+    printf(" %.10e,", data->yaw_ypos_cov);
+    printf(" %.10e,", data->yaw_zpos_cov);
+    printf(" %.10e,", data->xpos_roll_cov);
+    printf(" %.10e,", data->xpos_pitch_cov);
+    printf(" %.10e,", data->xpos_yaw_cov);
+    printf(" %.10e,", data->xpos_xpos_cov);
+    printf(" %.10e,", data->xpos_ypos_cov);
+    printf(" %.10e,", data->xpos_zpos_cov);
+    printf(" %.10e,", data->ypos_roll_cov);
+    printf(" %.10e,", data->ypos_pitch_cov);
+    printf(" %.10e,", data->ypos_yaw_cov);
+    printf(" %.10e,", data->ypos_xpos_cov);
+    printf(" %.10e,", data->ypos_ypos_cov);
+    printf(" %.10e,", data->ypos_zpos_cov);
+    printf(" %.10e,", data->zpos_roll_cov);
+    printf(" %.10e,", data->zpos_pitch_cov);
+    printf(" %.10e,", data->zpos_yaw_cov);
+    printf(" %.10e,", data->zpos_xpos_cov);
+    printf(" %.10e,", data->zpos_ypos_cov);
+    printf(" %.10e\n", data->zpos_zpos_cov);
+}

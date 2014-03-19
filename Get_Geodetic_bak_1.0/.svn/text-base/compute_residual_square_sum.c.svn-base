@@ -1,0 +1,43 @@
+/******************************************************************************
+NAME:           compute_residual_square_sum
+
+PURPOSE:        Compute the residual square sum by adding the dot product of:
+                sol_Ya * obs_mx * sol_Ya - 2 * obs_rgt * sol_Ya
+                to the observation square sum.
+
+RETURNS:        none
+*******************************************************************************
+                       Property of the U.S. Government
+                               NASA/GSFC/EDC
+******************************************************************************/
+#include "correct_los_model.h"
+
+void compute_residual_square_sum
+(
+    const double **obs_mx,      /* I: Normal matrix of the normal equation */
+    const double obs_rgt[],     /* I: Right-hand-side vector of normal equatn */
+    const double sol_Ya[],      /* I: Solution vector for the normal equation */
+    int num_params,             /* I: Number of parameters in solution vector */
+    double *post_sig            /* I/O: Input the square sum of the observation
+                                        and output the residual square sum of
+                                        the observation */
+)
+{
+    int i, j;           /* Loop control variable */
+    double sum1;        /* Sum of the matrix and solution vector */
+    double sum_square;  /* Sum square of the observation */
+
+    sum_square = *post_sig;
+
+    for(i = 0; i < num_params; i++)
+    {
+        sum1 = 0.0;
+        for(j = 0; j < num_params; j++)
+            sum1 += (obs_mx[i][j] * sol_Ya[j]);
+        sum_square += (sol_Ya[i] * sum1);
+        sum_square -= (2.0 * sol_Ya[i] * obs_rgt[i]);
+    }
+
+    /* Assign the residual square sum to the return variable */
+    *post_sig = sum_square;
+}

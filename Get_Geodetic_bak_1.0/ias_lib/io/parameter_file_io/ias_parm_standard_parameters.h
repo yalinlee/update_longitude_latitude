@@ -1,0 +1,510 @@
+#ifndef IAS_PARM_STANDARD_PARAMETERS_H
+#define IAS_PARM_STANDARD_PARAMETERS_H
+
+/* this file is for defining parameters that are used in multiple applications
+ */
+
+#define IAS_PARM_BAND_LIST(table, is_required, return_ptr, return_bytes, \
+        min_count) \
+        int default_band_list_##table[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}; \
+        IAS_PARM_ADD_INT(table, BAND_LIST, "Defines the bands to process", \
+            is_required, IAS_PARM_ARRAY, \
+            1, 1, 11, 11, default_band_list_##table, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_WRS_PATH(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, WRS_PATH, \
+            "Orbital WRS-2 Path the scene was collected on", \
+            IAS_PARM_REQUIRED, IAS_PARM_NOT_ARRAY, \
+            1, 1, 233, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_WRS_ROW(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, WRS_ROW, \
+            "Oribital WRS-2 Row the scene was collected on", \
+            IAS_PARM_REQUIRED, IAS_PARM_NOT_ARRAY, \
+            1, 1, 248, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_TARGET_WRS_PATH(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, TARGET_WRS_PATH, \
+            "Target WRS-2 Path the scene was collected on", \
+            is_required, IAS_PARM_NOT_ARRAY, \
+            1, 1, 233, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+/* The range for the target WRS row should be 1-248, 880-889, and 990-999.
+   This type of range is not supported and therefore is set to 1-999. */
+#define IAS_PARM_TARGET_WRS_ROW(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, TARGET_WRS_ROW, \
+            "Target WRS-2 Row the scene was collected on", \
+            is_required, IAS_PARM_NOT_ARRAY, \
+            1, 1, 999, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_STORE_CHARACTERIZATION_IN_DB(table, is_required ,return_ptr, \
+            return_bytes, min_count) \
+        int default_store_char_in_db_##table[] = {1}; \
+        IAS_PARM_ADD_BOOLEAN(table, STORE_CHARACTERIZATION_IN_DB, \
+            "Indicates characterization data should be stored in the " \
+            "characterization database: 1 to store data, 0 don't store data", \
+            is_required, IAS_PARM_NOT_ARRAY, \
+            default_store_char_in_db_##table, return_ptr, \
+            return_bytes, min_count)
+
+#define IAS_PARM_WORK_ORDER_ID(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, WORK_ORDER_ID, \
+            "Identification string for Work Order", IAS_PARM_REQUIRED, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count);
+
+#define IAS_PARM_PRODUCT_REQUEST_ID(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, PRODUCT_REQUEST_ID, \
+            "Identification string for Product Request ID", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count);
+
+#define IAS_PARM_PROCESSING_PASS(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, PROCESSING_PASS, \
+            "The current processing pass", \
+            IAS_PARM_REQUIRED, IAS_PARM_NOT_ARRAY, \
+            1, 1, 2, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_MAX_PROCESSORS_TO_USE(table, is_required, return_ptr, \
+                                       return_bytes, min_count) \
+        const int max_processes_dv_##table = 4; \
+        IAS_PARM_ADD_INT(table, MAX_PROCESSORS_TO_USE, \
+            "Maximum number of processors to use", \
+            is_required, IAS_PARM_NOT_ARRAY, \
+            1, 0, 20, 1, &max_processes_dv_##table, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_CPF(table, is_required, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, CAL_PARM_FILENAME, \
+            "Calibration parameter file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+    /* Add the GCP measurements filename parameter */
+#define IAS_PARM_MEASURED_GCP_FILENAME_FROM_PASS(table, return_ptr, \
+        return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, MEASURED_GCP_FILENAME, \
+        "GCP measurements filename", /*IAS_PARM_REQUIRED*/IAS_PARM_OPTIONAL, 0, NULL, 0, NULL, \
+        return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_SENSOR(table, is_required, return_ptr, return_bytes, \
+        min_count) \
+        IAS_PARM_ADD_STRING(table, SENSOR, \
+            "Satellite and Sensor to be used for processing", \
+            is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_SATELLITE(table, return_ptr, return_bytes, min_count) \
+        int default_satellite_##table[] = {8}; \
+        IAS_PARM_ADD_INT(table, SATELLITE, \
+            "Satellite ID (8 for Landsat 8)", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, \
+            1, 8, 8, 1, default_satellite_##table, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_SPACECRAFT(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, SPACECRAFT, \
+            "Spacecraft name", is_required, 0, NULL, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_L0R_FILENAME(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, L0R_FILENAME, \
+            "Name of the L0R image file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_L1R_FILENAME(table, is_required, return_ptr, return_bytes, \
+            min_count) \
+        IAS_PARM_ADD_STRING(table, L1R_FILENAME, \
+            "Name of the L1R image file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_PIXEL_MASK_FILENAME(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, PIXEL_MASK_FILENAME, \
+            "Name of the L1R pixel mask file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_L1G_FILENAME(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, L1G_FILENAME, \
+            "Name of the L1G image file", IAS_PARM_REQUIRED, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_L1G_FILENAME_FROM_PASS(table, is_required, return_ptr, \
+        return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, L1G_FILENAME, \
+            "Name of the L1G image file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_L1G_FILENAME_DEF(table, default_name, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, L1G_FILENAME, \
+            "Name of the L1G image file", IAS_PARM_REQUIRED, \
+            0, NULL, \
+            1, default_name, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_GRID_FILENAME(table, is_required, return_ptr, return_bytes, \
+            min_count) \
+        IAS_PARM_ADD_STRING(table, GRID_FILENAME, \
+            "Name of the grid file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_GRID_FILENAME_FROM_PASS(table, is_required, return_ptr, \
+            return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, GRID_FILENAME, \
+            "Name of the grid file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_GEOM_GRID_FILENAME(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, GEOM_GRID_FILENAME, \
+            "Name of the geom grid file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_GEOM_GRID_FILENAME_FROM_PASS(table, is_required, return_ptr, \
+            return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, GEOM_GRID_FILENAME, \
+            "Name of the geom grid file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_DEM_FILENAME(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, DEM_FILENAME, \
+            "Name of the DEM file", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_DEM_FILENAME_FROM_PASS(table, is_required, return_ptr, \
+            return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, DEM_FILENAME, \
+            "Name of the DEM file", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_DOQ_FILENAME(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, DOQ_FILENAME, \
+            "Name of the DOQ file", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_DOQ_GRID_FILENAME(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, DOQ_GRID_FILENAME, \
+            "Name of the grid file for resampling the DOQ", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_SOURCE_IMAGE_TYPE(table, is_required, return_ptr, \
+            return_bytes, min_count) \
+        int default_source_image_type_##table[] = {0}; \
+        IAS_PARM_ADD_INT(table, SOURCE_IMAGE_TYPE, \
+            "Type of input image: 0 - DEM; 1 - DOQ", is_required, \
+            IAS_PARM_NOT_ARRAY, 1, 0, 1, 1, default_source_image_type_##table, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_MODEL_FILENAME_FROM_PASS(table, is_required, return_ptr, \
+            return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, MODEL_FILENAME, \
+            "Satellite model file name", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_BPF_OLI(table, is_required, return_ptr, return_bytes, \
+            min_count) \
+        IAS_PARM_ADD_STRING(table, BIAS_PARM_FILENAME_OLI, \
+            "Bias parameter file for OLI", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_BPF_TIRS(table, is_required, return_ptr, return_bytes, \
+            min_count) \
+        IAS_PARM_ADD_STRING(table, BIAS_PARM_FILENAME_TIRS, \
+            "Bias parameter file for TIRS", is_required, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_RLUT(table, is_required, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_STRING(table, RLUT_FILENAME, \
+            "Response linearization Look Up Table parameter file", is_required,\
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_ACQUISITION_TYPE(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, ACQUISITION_TYPE, \
+            "Acquisition type (0 for Earth, 1 for Lunar, 2 for Stellar, " \
+            "3 for other)", \
+            IAS_PARM_REQUIRED, IAS_PARM_NOT_ARRAY, \
+            1, 0, 3, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_TARGET_PROJECTION(table, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, TARGET_PROJECTION, \
+            "Target projection (1 = UTM, 6 = PS, and 22 = SOM)", \
+            IAS_PARM_REQUIRED, IAS_PARM_NOT_ARRAY, \
+            1, 0, 30, 0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_PRECISION_SUCCEEDED_FLAG_FROM_PASS(table, \
+            return_ptr, return_bytes, min_count, processing_pass) \
+        int default_precision_succeeded_flag_##table[] = {1}; \
+        IAS_PARM_ADD_INT_WITH_PASS(table, PRECISION_SUCCEEDED_FLAG, \
+            "Flag indicating if precision correction was successful (1) " \
+            "or not (0)", IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, \
+            1, 0, 1, 1, default_precision_succeeded_flag_##table, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_PRECISION_RESIDUALS_FILENAME_FROM_PASS(table, \
+          return_ptr,  return_bytes, min_count, processing_pass) \
+        IAS_PARM_ADD_STRING_WITH_PASS(table, PRECISION_RESIDUALS_FILENAME, \
+            "GPS correct LOS model (precision correction) residuals filename", \
+            IAS_PARM_REQUIRED, 0, NULL, 0, NULL, \
+            return_ptr, return_bytes, min_count, processing_pass)
+
+#define IAS_PARM_B2B_CHAR_OUTPUT_FILENAME(table, return_ptr, return_bytes, \
+         min_count) \
+        IAS_PARM_ADD_STRING(table, B2B_CHAR_OUTPUT_FILENAME, \
+            "Name of the b2bchar output file", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_B2B_CHAR_RES_FILENAME(table, return_ptr, return_bytes, \
+         min_count) \
+        const char *default_b2bchar_file_##table[] = {"b2bchar.res"}; \
+        IAS_PARM_ADD_STRING(table, B2B_CHAR_RES_FILENAME, \
+         "Residual report made by Band Accuracy Assessment Characterization", \
+            IAS_PARM_REQUIRED, \
+            0, NULL, \
+            1, default_b2bchar_file_##table, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_I2I_CHAR_OUTPUT_FILENAME(table, return_ptr, return_bytes, \
+         min_count) \
+        IAS_PARM_ADD_STRING(table, I2I_CHAR_OUTPUT_FILENAME, \
+            "Name of the i2ichar output file", IAS_PARM_OPTIONAL, \
+            0, NULL, \
+            0, NULL, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_TIEPT_TYPE(table, default_type, return_ptr, return_bytes, \
+            min_count) \
+        IAS_PARM_ADD_INT(table, TIEPT_TYPE, "Type of tie points to use for " \
+            "correlation (1 = REGULAR_SPACED, 2 = retrieve tie points from " \
+            "a file for i2i char or use the grid to build tie points for b2b " \
+            "char)", IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1, 1, 2, 1, \
+            default_type, return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_MAX_DISP(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_DOUBLE(table, MAX_DISP, "Maximum displacement for " \
+            "correlation point - to optionally override CPF value", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1,1, 1000, 0, \
+            NULL, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_MIN_CORR(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_DOUBLE(table, MIN_CORR, "Minimum correlation strength " \
+            "- to optionally override CPF value", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 0, 0, 0, 0, \
+            NULL, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_THRESHOLD(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_DOUBLE(table, THRESHOLD, "If the percentage of valid " \
+            " pixels is below this threshold then do not correlate " \
+            "- to optionally override CPF value", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1, 0, 100, 0, \
+            NULL, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_OCCLUSION_FILENAME(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_STRING(table, OCCLUSION_FILENAME, \
+            "Name of the terrain occlusion file", IAS_PARM_OPTIONAL, \
+            0, NULL, 0, NULL, return_ptr, return_bytes, 1)
+
+#define IAS_PARM_GCP_DIRECTORY(table, is_required, return_ptr, return_bytes) \
+        IAS_PARM_ADD_STRING(table, GCP_DIRECTORY, "Directory that contains "\
+        "the Ground Control Points", is_required, 0, NULL, 0, NULL, \
+        return_ptr, return_bytes, 1)
+
+#define IAS_PARM_CLOUD_COVER_SCORE(table, return_ptr, return_bytes) \
+        double default_double_invalid_##table[] = {-1.0}; \
+        IAS_PARM_ADD_DOUBLE(table, CLOUD_COVER_SCORE, \
+            "Percent of image that is covered by clouds. -1 means not" \
+            " calculated", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1, -1, 100.0, 1, \
+            default_double_invalid_##table, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_CLOUD_COVER_ALGORITHM(table, index, return_ptr, return_bytes) \
+        const char *default_string_##table##index[] = {""}; \
+        IAS_PARM_ADD_STRING(table, CLOUD_COVER_ALGORITHM_##index, \
+            "Cloud cover algorithm", IAS_PARM_OPTIONAL, \
+            0, NULL, 1, default_string_##table##index, return_ptr, \
+            return_bytes, 1)
+
+#define IAS_PARM_CLOUD_COVER_WEIGHTS(table, index, return_ptr, return_bytes) \
+        IAS_PARM_ADD_DOUBLE(table, CLOUD_COVER_WEIGHTS_##index, \
+            "Cloud cover algorithm weights used to resolve algorithm masks", \
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY, 0, 0.0, 1.0, 0, \
+            NULL, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_QUALITY_BAND_FILENAME(table, is_required, return_ptr, \
+        return_bytes) \
+        IAS_PARM_ADD_STRING(table, QUALITY_BAND_FILENAME, \
+            "Name of the quality band file", is_required, 0, NULL, 0, NULL, \
+            return_ptr, return_bytes, 1)
+
+/* Standard parameter definitions for MIN_ELEVATION and MAX_ELEVATION
+   parameters (written to OMF by DRE; read by various RPS/GPS apps) */
+#define IAS_PARM_MIN_ELEVATION(table, is_required, num_defaults, \
+        default_ptr, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, MIN_ELEVATION, "Minimum DEM elevation", \
+        is_required, IAS_PARM_NOT_ARRAY, 0, 0, 0, num_defaults, default_ptr, \
+        return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_MAX_ELEVATION(table, is_required, num_defaults, \
+        default_ptr, return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_INT(table, MAX_ELEVATION, "Maximum DEM elevation", \
+        is_required, IAS_PARM_NOT_ARRAY, 0, 0, 0, num_defaults, default_ptr, \
+        return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_UTM_ZONE(table, is_required, num_defaults, \
+            default_ptr, return_ptr, return_bytes, min_count) \
+            IAS_PARM_ADD_INT(table, UTM_ZONE, "UTM zone to override the " \
+            "automatically calculated one", \
+            is_required, IAS_PARM_NOT_ARRAY, 1, 0, 60, num_defaults, \
+            default_ptr, return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_RANGE(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_DOUBLE(table, RANGE, "Correlation window minimum and " \
+            "maximum pixel values- true default is found in the CPF", \
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY, 1,0, 65535, 0, \
+            NULL, return_ptr, return_bytes, 2)
+
+#define IAS_PARM_CHIP_SIZE(table, return_ptr, return_bytes) \
+        IAS_PARM_ADD_INT(table, CHIP_SIZE, "Correlation chip size " \
+            "(line sample)- true default is found in the CPF", \
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY, 0,0, 0, 0, \
+            NULL, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_NLINE_PTS(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_INT(table, NLINE_PTS, "Number of GCP points in the " \
+            "line direction; these are needed to define the number of points " \
+            "if TIEPT_TYPE is REGULAR_SPACED", IAS_PARM_OPTIONAL, \
+            IAS_PARM_NOT_ARRAY, 1, 0, 10000, num_defaults, default_ptr, \
+            return_ptr, return_bytes, 0)
+
+#define IAS_PARM_NSAMP_PTS(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_INT(table, NSAMP_PTS, "Number of GCP points in the " \
+            "sample direction; these are needed to define the number of " \
+            "points if TIEPT_TYPE is REGULAR_SPACED", IAS_PARM_OPTIONAL, \
+            IAS_PARM_NOT_ARRAY, 1, 0, 10000, num_defaults, default_ptr, \
+            return_ptr, return_bytes, 0)
+
+#define IAS_PARM_GEOMETRIC_RMSE_MODEL_Y(table, num_defaults, default_ptr, \
+            return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_DOUBLE(table, GEOMETRIC_RMSE_MODEL_Y, \
+            "Precision model post-fit Y-direction RMSE", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 0, 0, 0, \
+            num_defaults, default_ptr, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_GEOMETRIC_RMSE_MODEL_X(table, num_defaults, default_ptr, \
+            return_ptr, return_bytes, min_count) \
+        IAS_PARM_ADD_DOUBLE(table, GEOMETRIC_RMSE_MODEL_X, \
+            "Precision model post-fit X-direction RMSE", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 0, 0, 0, \
+            num_defaults, default_ptr, \
+            return_ptr, return_bytes, min_count)
+
+#define IAS_PARM_GROUND_CONTROL_POINTS_MODEL(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_INT(table, GROUND_CONTROL_POINTS_MODEL, \
+            "The number of GCP points used by the model", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1, 0, 100000, \
+            num_defaults, default_ptr, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_GEOMETRIC_RMSE_MODEL(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_DOUBLE(table, GEOMETRIC_RMSE_MODEL, \
+            "Precision model post-fit RMSE", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 0, 0, 0, \
+            num_defaults, default_ptr, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_GROUND_CONTROL_POINTS_VERIFY(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_INT(table, GROUND_CONTROL_POINTS_VERIFY, \
+            "The number of GCP points used by geometric", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 1, 0, 100000, \
+            num_defaults, default_ptr, return_ptr, return_bytes, 0)
+
+#define IAS_PARM_GEOMETRIC_RMSE_VERIFY(table, num_defaults, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_DOUBLE(table, GEOMETRIC_RMSE_VERIFY, \
+            "The RMSE determined by geometric", \
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY, 0, 0, 0, \
+            num_defaults, default_ptr, return_ptr, return_bytes, 0)
+
+/* "Common" OLI and TIRS RPS processing levels */
+#define IAS_PARM_OLI_RPS_PROC_LEVEL_DN(table, is_required, default_ptr, \
+            return_ptr, return_bytes) \
+            IAS_PARM_ADD_STRING(table, OLI_RPS_PROC_LEVEL_DN, \
+            "RPS processing level required for OLI histogram statistics " \
+            " -- input data have not been converted to radiance values", \
+            is_required, 0, NULL, 1, default_ptr, return_ptr, \
+            return_bytes, 0)
+
+#define IAS_PARM_TIRS_RPS_PROC_LEVEL_DN(table, is_required, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_STRING(table, TIRS_RPS_PROC_LEVEL_DN, \
+            "RPS processing level required for TIRS histogram statistics " \
+            " -- input data have not been converted to radiance values", \
+            is_required, 0, NULL, 1, default_ptr, return_ptr, \
+            return_bytes, 0)
+
+#define IAS_PARM_TIRS_RPS_PROC_LEVEL_DN_BLIND(table, is_required, \
+            default_ptr, return_ptr, return_bytes) \
+            IAS_PARM_ADD_STRING(table, TIRS_RPS_PROC_LEVEL_DN_BLIND, \
+            "RPS processing level required for TIRS blind band histogram " \
+            "statistics -- input data have not been processed or converted " \
+            "to radiance values", is_required, 0, NULL, 1, \
+            default_ptr, return_ptr, return_bytes, 0)
+
+#endif

@@ -1,0 +1,55 @@
+/******************************************************************************
+NAME:           solve_weighted_least_square
+
+PURPOSE:        Solve the weighted least square problem with nxn normal matrix;
+
+RETURNS:        SUCCESS or ERROR
+
+******************************************************************************
+                       Property of the U.S. Government
+                          USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_math.h"
+#include "correct_los_model.h"
+
+int solve_weighted_least_square
+(
+    const double **obs_mx,            /* I: Normal matrix for observation */
+    const double obs_rgt[],     /* I: Right hand side term for observation */
+    const double apr_wgt_par[], /* I: Normal matrix for the a priori
+                                      information (diagonal) */
+    const double apr_corr[],    /* I: Right hand side term for the a priori
+                                      information */
+    int num_params,             /* I: Number of dimensions */
+    double wgt_fact_obs,        /* I: Scale factor for weight of observation */
+    double wgt_fact_apr,        /* I: Scale factor for weight of a priori
+                                      parameters */
+    double **ptr_cov_mx,        /* O: Solution covariance matrix */
+    double sol_Ya[]             /* O: Solution estimate vector */
+)
+{
+    int i, j;          /* Looping variables */
+    int status;
+
+    /* Form the normal equation for the Weighted Least Square problem */
+    for (i = 0; i < num_params; i++)
+    {
+        for (j = 0; j < num_params; j++)
+            ptr_cov_mx[i][j] = wgt_fact_obs * obs_mx[i][j];
+
+        ptr_cov_mx[i][i] += (wgt_fact_apr * apr_wgt_par[i]);
+        sol_Ya[i] = wgt_fact_obs * obs_rgt[i] + wgt_fact_apr * apr_corr[i];
+    }
+
+    /* Solve the equation */
+    status = ias_math_solve_linear_equation(ptr_cov_mx, num_params, sol_Ya);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Unable to obtain solution for normal equation");
+        return ERROR;
+    }
+
+    return SUCCESS;
+}

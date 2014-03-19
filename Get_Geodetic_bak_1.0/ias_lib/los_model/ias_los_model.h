@@ -1,0 +1,222 @@
+#ifndef IAS_LOS_MODEL_H
+#define IAS_LOS_MODEL_H
+
+#include "ias_const.h"
+#include "ias_types.h"
+#include "ias_structures.h"
+#include "ias_cpf.h"
+#include "ias_satellite_attributes.h"
+#include "ias_spacecraft_model.h"
+#include "ias_sensor_model.h"
+
+/* Used in collecting the L0R header metadata that needs to be set into
+   the model. Use this to support both model init and the Ingest system to
+   be able to collect the L0R data and pass to model lib routines. */
+typedef struct ias_los_model_l0r_data
+{
+    int wrs_path;
+    int wrs_row;
+    IAS_SENSOR_L0R_DATA l0r_sensor_data;
+} IAS_LOS_MODEL_L0R_DATA;
+
+typedef struct ias_earth_characteristics
+{
+    double ut1_utc_correction;     /* UT1-UTC correction (seconds) */
+    double pole_wander_x;          /* Earth's pole wander correction
+                                      (arc seconds) */
+    double pole_wander_y;          /* Earth's pole wander correction
+                                      (arc seconds) */
+    double semi_major_axis;        /* Earth's semi-major axis (meters) */
+    double semi_minor_axis;        /* Earth's semi-minor axis (meters) */
+    double eccentricity;           /* Earth's eccentricity (no units) */
+    double earth_angular_velocity; /* Earth's inertial rotational rate,
+                                      or angular velocity (radians/second) */
+    double speed_of_light;         /* Speed of light (meters/second) */
+} IAS_EARTH_CHARACTERISTICS;
+
+typedef struct ias_los_model
+{
+    /* General LOS model information */
+    /*-------------------------------*/
+    IAS_SATELLITE_ID satellite_id;         /* Satellite ID */
+    int satellite_number;                  /* Satellite number */
+    char sw_version[IAS_SOFTWARE_VERSION_SIZE]; /* Producing system software
+                                                   version */
+    int wrs_path;                          /* WRS target path number */
+    int wrs_row;                           /* WRS target row number */
+    IAS_ACQUISITION_TYPE acquisition_type; /* Acquisition type: Earth, Lunar,or
+                                              Stellar */
+    IAS_CORRECTION_TYPE correction_type;   /* Correction type: Systematic or
+                                              Precision */
+    IAS_EARTH_CHARACTERISTICS earth;       /* Earth orientation corrections */
+    IAS_SPACECRAFT_MODEL spacecraft;       /* Spacecraft model */
+    IAS_SENSOR_MODEL sensor;            	/* Sensor model */
+} IAS_LOS_MODEL;
+
+/* Forward reference to the lunar projection structure */
+typedef struct IAS_LUNAR_PROJECTION IAS_LUNAR_PROJECTION;
+
+/***************************************************************************
+Function prototypes - alphabetical order (hopefully)
+****************************************************************************/
+IAS_LOS_MODEL *ias_los_model_allocate();
+
+int ias_los_model_apply_precision_params
+(
+    IAS_SC_PRECISION_MODEL *precision_params, /* I: precision params to apply */
+    IAS_LOS_MODEL *model                      /* O: updated att/eph with prec */
+);
+
+int ias_los_model_build_jitter_table
+(
+    IAS_CPF *cpf,               /*I: CPF structure pointer */
+    IAS_LOS_MODEL *model        /* I/O: Model structure to separate low/high
+                                        attitude data within */
+);
+
+IAS_LUNAR_PROJECTION *ias_los_model_create_lunar_projection
+(
+    const IAS_LOS_MODEL *model,  /* I: model information */
+    int band_index,              /* I: Band index */
+    int sca_index,               /* I: SCA index */
+    IAS_SENSOR_DETECTOR_TYPE dettype, /* I: Detector type */
+    double unit_scale,           /* I: Scale for output coordinate units */
+    int use_cache                /* I: Flag to use caching to speed up
+                                       transformations when a lot of
+                                       transformations will be done */
+);
+
+void ias_los_model_free
+(
+    IAS_LOS_MODEL *model        /* I: model to free */
+);
+
+void ias_los_model_free_lunar_projection
+(
+    IAS_LUNAR_PROJECTION *proj  /* I: pointer to structure to free */
+);
+
+int ias_los_model_get_moon_position_at_location
+(
+    const IAS_LOS_MODEL *model, /*I: model structure */
+    int band_index,         /*I: Band index in the image */
+    int sca_index,          /*I: SCA index in the image */
+    double line,            /*I: Line of interest (target) */
+    double sample,          /*I: Sample of interest (target) */
+    IAS_SENSOR_DETECTOR_TYPE dettype, /*I: Detector type */
+    double *right_ascension,/*O: Right ascension lunar position (in radians)
+                                 relative to spacecraft */
+    double *declination,    /*O: Declination lunar position (in radians) 
+                                 relative to spacecraft */
+    double *distance        /*O: Lunar distance relative to spacecraft
+                                 (in meters) */
+);
+
+int ias_los_model_get_satellite_state_vector_at_location
+(
+    double line,                        /* I: Line of interest (target) */
+    double sample,                      /* I: Sample of interest (target) */
+    int band_index,                     /* I: Band the line/sample are in */
+    int sca_index,                      /* I: SCA the line/sample are in */
+    IAS_SENSOR_DETECTOR_TYPE dettype,   /* I: Detector type */
+    const IAS_LOS_MODEL *model,         /* I: LOS model information */
+    IAS_VECTOR *satpos,                 /* O: Satellite position (meters) in
+                                              Earth Centered Inertial (ECI)
+                                              coordinates */
+    IAS_VECTOR *satvel,                 /* O: Satellite velocity in ECI
+                                              (meters/millisec) */
+    IAS_VECTOR *satatt,                 /* O: Satellite attitude (roll, pitch,
+                                              yaw) in radians */
+    double *image_time,                 /* O: Time of the target image point
+                                              (seconds of day) */
+    int  *year,                         /* O: Year of image point */
+    int  *day                           /* O: Day of image point */
+);
+
+IAS_LOS_MODEL *ias_los_model_initialize
+(
+    IAS_ACQUISITION_TYPE acq_type    /* I - acquisition type */
+);
+
+int ias_los_model_input_line_samp_to_geodetic
+(
+//    double line,                        /* I: Input line number */
+	long long image_time, 					/* I: Generation time of the image */
+    double sample,                      /* I: Input sample number */
+    int band_index,                     /* I: Input band index */
+    int sca_index,                      /* I: SCA index */
+    double target_elev,                 /* I: Target elevation
+                                              (at line/sample) */
+    const IAS_LOS_MODEL *model,         /* I: LOS model information */
+//    const IAS_LOS_MODEL *model1,
+    IAS_SENSOR_DETECTOR_TYPE dettype,   /* I: Detector type to project
+                                              NOMINAL, ACTUAL, or EXACT */
+    double *attitude_variance,          /* I: Attitude perterbation array
+                                              (r,p,y) (in radians) used in
+                                              determining the jitter
+                                              sensitivity coefficients or
+                                              NULL to factor with no variance */
+    double *target_latd,                /* O: Target latitude */
+    double *target_long                 /* O: Target longitude */
+);
+
+int ias_los_model_set_cpf
+(
+    IAS_CPF *cpf,                  /* I: CPF structure pointer with values to
+                                     set into the model structure */
+    IAS_SENSOR_L0R_DATA *l0r_sensor_data,
+                                  /* O: Sensor L0R data needed by other funcs */
+    IAS_LOS_MODEL *model          /* O: Model structure to populate */
+);
+
+
+///////////////////////////////////////////////////////////////////////////////
+//added by LYL at 2014/3/6
+int ias_los_model_set_cpf_for_MWD
+(
+    IAS_CPF *cpf,                  /* I: CPF structure pointer with values to
+                                     set into the model structure */
+    IAS_LOS_MODEL *model          /* O: Model structure to populate */
+);
+////////////////////////////////////////////////////////////////////////////////
+
+
+int ias_los_model_set_l0r
+(
+    IAS_CPF *cpf,                        /* I: CPF structure pointer for things
+                                           that are needed but not stored in
+                                           the model */
+    IAS_LOS_MODEL_L0R_DATA *l0r_data,   /* I: L0R data to create a model */
+    IAS_LOS_MODEL *model                /* O: Model structure to populate */
+);
+
+int ias_los_model_transform_lunar_projection
+(
+    const IAS_LUNAR_PROJECTION *proj, /* I: Lunar projection information */
+    double iline,          /* I: Input line location */
+    double isamp,          /* I: Input sample location */
+    double *lunar_lat,     /* I/O: Declination of LOS */
+    double *lunar_long,    /* I/O: Right ascension of LOS */
+    double *distance_scale /* O: Scale factor for pixel size to apply */
+);
+
+void ias_los_model_get_moon_center
+(
+    const IAS_LUNAR_PROJECTION *proj, /* I: Lunar projection information */
+    double *lunar_dec,      /* O: Declination of moon center */
+    double *lunar_rasc      /* O: Right ascension of moon center */
+);
+
+int ias_los_model_calc_scene_corners
+(
+    const IAS_LOS_MODEL *model, /* I: LOS model structure */
+    int band_number,            /* I: Band number to base the calculations on */
+    int start_line,             /* I: Starting line (0-relative) to calculate
+                                      the corners at */
+    int end_line,               /* I: Ending line (0-relative) to calculate the
+                                      corners at (inclusive) */
+    double elevation,           /* I: Elevation to calculate the corners at */
+    struct IAS_CORNERS *corners /* O: Scene lat/long corners (degrees) */
+);
+
+#endif

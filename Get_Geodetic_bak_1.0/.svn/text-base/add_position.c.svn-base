@@ -1,0 +1,113 @@
+/******************************************************************************
+NAME:           add_position
+
+PURPOSE:        Add the position to the ground control point structure.
+                assign the reference time to the time structure.
+
+RETURN VALUE: 
+SUCCESS         Successfully got GCP information
+ERROR           Error occurred; information not added to structure and time
+
+ALGORITHM REFERENCES:
+
+NOTE:
+This function changes units from kilometers to meters.
+
+*******************************************************************************
+                        Property of the U.S. Government
+                            USGS EROS Data Center
+******************************************************************************/
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "ias_los_model.h"
+#include "ias_l1g.h"
+#include "ias_geo.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int add_position
+(
+    const IAS_LOS_MODEL *model, /* I: The OLI model structure */
+    double x1R_line,            /* I: Input search line */
+    double x1R_samp,            /* I: Input search sample */
+    int band_index,             /* I: Band ndexwith line/sample */
+    int x1R_sca,                /* I: SCA number with line/sample */
+    double *vector_y,           /* I: Vector of y search space */
+    double *vector_x,           /* I: Vector of x search space */
+    double s_major,             /* I: Semi-major axis */
+    double flat,                /* I: Flattening */
+    double tref[3],             /* O: Reference time year,day,seconds */
+    GCP_STRUCT *gcp_struct      /* I/O: GCP structure for precision process */
+)
+{
+    IAS_VECTOR satpos;              /* Satellite position vector */
+    IAS_VECTOR satvel;              /* Satellite velocity vector */
+    IAS_VECTOR satatt;              /* Satellite attitude (roll,pitch,yaw) */
+    IAS_VECTOR pixpos;              /* Satellite pixel position vector */
+    double time;                    /* Time of day */
+    int day;                        /* Julian day */
+    int year;                       /* Year */
+    int status;                     /* Error status */
+    double delta;                   /* Across-track angle (radians) */
+    double psi;                     /* Along-track angle (radians) */
+    double transf_matrix[3][3];     /* Transformation matrix */
+    IAS_SENSOR_DETECTOR_TYPE det_type = IAS_NOMINAL_DETECTOR;
+
+    /* Calculate the position, velocity and time to the satellite at GCP */
+    status = ias_los_model_get_satellite_state_vector_at_location(x1R_line,
+            x1R_samp, band_index, x1R_sca, det_type, model, &satpos, &satvel,
+            &satatt, &time, &year, &day);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the satellite state vector");
+        return ERROR;
+    }
+
+    tref[0] = (double)year;
+    tref[1] = (double)day;
+    tref[2] = time;
+    gcp_struct->time = time;
+    gcp_struct->satpos.x = gcp_struct->satpos0.x = satpos.x;
+    gcp_struct->satpos.y = gcp_struct->satpos0.y = satpos.y;
+    gcp_struct->satpos.z = gcp_struct->satpos0.z = satpos.z;
+    gcp_struct->satvel.x = gcp_struct->satvel0.x = satvel.x;
+    gcp_struct->satvel.y = gcp_struct->satvel0.y = satvel.y;
+    gcp_struct->satvel.z = gcp_struct->satvel0.z = satvel.z;
+
+    /* Parameters to carry roll-pitch-yaw data for each GCP */
+    gcp_struct->satatt.x = satatt.x;
+    gcp_struct->satatt.y = satatt.y;
+    gcp_struct->satatt.z = satatt.z;
+
+    /* Get the latitude and longitude in cartesion coordinates */
+    status = get_lat_long(gcp_struct->x1Gline, gcp_struct->x1Gsamp,
+            gcp_struct->dem_elevation, s_major, flat, vector_y, vector_x,
+            &pixpos);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Returned finding reference lat/long");
+        return ERROR;
+    }
+    gcp_struct->pixpos.x = pixpos.x;
+    gcp_struct->pixpos.y = pixpos.y;
+    gcp_struct->pixpos.z = pixpos.z;
+
+    /* Get the transformation matrix to find the orbit oriented coordinates */
+    status = ias_geo_compute_earth2orbit_transform(&satpos, &satvel,
+            transf_matrix);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Getting the orbit oriented transformation matrix");
+        return ERROR;
+    }
+
+    /* Get the line of sight at the GCP */
+    calc_line_of_sight(&(gcp_struct->pixpos), &satpos, transf_matrix, &delta,
+        &psi);
+
+    gcp_struct->delta = gcp_struct->delta0 = delta;
+    gcp_struct->psi = gcp_struct->psi0 = psi;
+
+    return SUCCESS;
+}

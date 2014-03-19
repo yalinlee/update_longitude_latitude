@@ -1,0 +1,32 @@
+K 10
+svn:ignore
+V 33
+Makefile
+Makefile.in
+.deps
+.libs
+
+K 13
+svn:mergeinfo
+V 1407
+/branches/ingest/ING_IAS_LIB_3_1_0_BRANCH/io/ancillary_io:30881-31405
+/branches/ingest/ING_IAS_LIB_3_2_0_BRANCH/io/ancillary_io:33915-34288
+/branches/oli_ias/IAS_1_0_0_BRANCH/ias_lib/io/ancillary_io:24846-25866
+/branches/oli_ias/IAS_2_0_0_BRANCH/ias_lib/io/ancillary_io:29548-31406
+/branches/oli_ias/IAS_3_0_0_BRANCH/ias_lib/io/ancillary_io:33031-35210
+/branches/oli_ias/TJR2_IAS_1_0_0_IT/ias_lib/io/ancillary_io:24169-24647
+/branches/oli_ias/epoch2/ias_lib/io/ancillary_io:22745-23686
+/branches/oli_ias/epoch3/ias_lib/io/ancillary_io:29851-30742
+/branches/oli_ias/ias_rel_3_1_dev_branch/ias_lib/io/ancillary_io:33976-34327
+/branches/oli_ias/ias_rel_3_2_tirs_2nd_lin/ias_lib/io/ancillary_io:37293-37326
+/branches/oli_ias/jitter_model/ias_lib/io/ancillary_io:25967-27248
+/branches/oli_ias/jitter_model_review/ias_lib/io/ancillary_io:27427-27737
+/branches/oli_ias/rdd_oui_speed_issues/ias_lib/io/ancillary_io:37298-37377
+/branches/oli_ias/rdd_perllib_2/ias_lib/io/ancillary_io:31203-31221
+/branches/oli_ias/red_4872_novas_eph/ias_lib/io/ancillary_io:35673-36045
+/branches/oli_ias/sca_trimming/ias_lib/io/ancillary_io:27741-27825
+/branches/oli_ias/tjb_5515_oli_ias/ias_lib/io/ancillary_io:35556-36049
+/branches/oli_ias/tjb_5783/ias_lib/io/ancillary_io:36815-37008
+/branches/oli_ias/tjr_4882_ias_code/ias_lib/io/ancillary_io:34307-35193
+/trunk/oli_ias/ias_lib/io/ancillary_io:37125-37126,37278,37341,37364,37378
+END

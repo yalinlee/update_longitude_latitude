@@ -1,0 +1,53 @@
+/*****************************************************************************
+NAME:           get_proj_info
+
+PURPOSE:  Get the projection information needed to run GCTP
+
+RETURN VALUE:
+SUCCESS         Successfully obtained the projection information
+ERROR           Error occurred; projection information not obtained
+
+*******************************************************************************
+                        Property of the U.S. Government
+                            USGS EROS Data Center
+*****************************************************************************/
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_geo.h"
+#include "ias_l1g.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int get_proj_info
+(
+    L1GIO *l1g_ptr,             /* I: L1G structure with OPEN band */
+    IAS_PROJECTION *proj_info   /* O: Projection info needed to run GCTPC */
+)
+{
+    int status;
+    int i;
+    IAS_L1G_FILE_METADATA fmeta;
+
+    /* Initalize variables for GCTP */
+    status = ias_l1g_get_file_metadata(l1g_ptr, &fmeta);
+    if(status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Retrieving image file attributes");
+        return ERROR;
+    }
+    proj_info->proj_code = fmeta.projection_code;
+    proj_info->zone = fmeta.zone_code;
+    proj_info->spheroid = fmeta.spheroid_code;
+
+    status = ias_geo_get_units(fmeta.projection_units, &(proj_info->units));
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Illegal unit from image attributes");
+        return ERROR;
+    }
+
+    for(i = 0; i < IAS_PROJ_PARAM_SIZE; i++)
+        proj_info->parameters[i] = fmeta.projection_parameters[i];
+
+    return SUCCESS;
+}

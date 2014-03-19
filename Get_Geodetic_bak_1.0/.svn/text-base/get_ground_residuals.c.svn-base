@@ -1,0 +1,124 @@
+/******************************************************************************
+NAME:       get_ground_residuals
+
+PURPOSE:  Calculates the projection (x/y) residual values in meters.
+
+
+RETURNS: SUCCESS or ERROR
+*******************************************************************************
+                        Property of the U.S. Government
+                            USGS EROS Data Center
+******************************************************************************/
+#include <math.h>
+#include "ias_const.h"
+#include "ias_structures.h"
+#include "ias_logging.h"
+#include "ias_geo.h"
+#include "ias_los_model.h"
+#include "ias_math.h"
+#include "gctp.h"
+#include "correct_los_model.h"
+
+int get_ground_residuals
+(
+    const IAS_LOS_MODEL *model, /* I: OLI model */
+    int gcp_num,                /* I: GCP array number */
+    GCP_STRUCT gcp_struct[]     /* I/O: Array of GCP information structures */
+)
+{
+    IAS_VECTOR lef;         /* Look vector in the Earth-fixed system (meters) */
+    IAS_VECTOR lob;         /* Look vector in the Orbit oriented system
+                               (meters) */
+    IAS_VECTOR tvec;        /* Target geocentric vector */ 
+    double orbit2ecf[3][3]; /* Orbital <--> ECF transformation matrix */
+    double ef_lat;          /* Latitude of "new" point (projected to earth) */
+    double ef_lon;          /* Longitude of "new" point (projected to earth) */
+    double rad;             /* Radius associated with "new" point */
+    double ef_x;            /* The x value of the ground point found */
+    double ef_y;            /* The y value of the ground point found */
+    double true_x;          /* The x value converted from true longitude */
+    double true_y;          /* The y value converted from true latitude */
+    double true_lat;        /* The True latitude of the point */
+    double true_lon;        /* The True longitude of the point */
+    double geocentric_lat;  /* The geocentric latitude of the point */
+    double mag;             /* Magnitude of vector */
+    double height;          /* Height for geocentric to geodetic conversion */
+    int status;
+    const IAS_GEO_PROJ_TRANSFORMATION *degrees2map 
+        = get_proj_transform_degrees2map();
+    const IAS_GEO_PROJ_TRANSFORMATION *radians2map 
+        = get_proj_transform_radians2map();
+
+    /* Calculate the transformation matrix from Earth Centered Fixed (ECF)
+       to Orbit system */
+    status = ias_geo_compute_earth2orbit_transform(&gcp_struct[gcp_num].satpos,
+            &gcp_struct[gcp_num].satvel, orbit2ecf);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Computing earth to orbit transformation");
+        return ERROR;
+    }
+
+    /* Transpose matrix to get Orbit to ECF */
+    ias_math_transpose_3x3_matrix(orbit2ecf);
+
+    /* Given satellite position and correction terms, calculate
+       a new look vector */
+    lob.x = tan(gcp_struct[gcp_num].psi);
+    lob.y = tan(gcp_struct[gcp_num].delta);
+    lob.z = 1.0;
+    mag = sqrt(lob.x*lob.x + lob.y*lob.y + lob.z*lob.z);
+    lob.x = lob.x/mag;
+    lob.y = lob.y/mag;
+    lob.z = lob.z/mag;
+
+    /* Transform orbit system to ECF */
+    ias_math_transform_3dvec(&lob, orbit2ecf, &lef);              
+
+    status = ias_geo_find_target_position(&gcp_struct[gcp_num].satpos, &lef,
+            &model->earth, gcp_struct[gcp_num].elevation, &tvec,
+            &geocentric_lat, &ef_lon, &rad);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Finding the geographic target position");
+        return ERROR;
+    }
+
+    status = ias_geo_convert_geocentric_height_to_geodetic(geocentric_lat, rad,
+            &model->earth, &ef_lat, &height);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Converting the geocentric height to geodetic");
+        return ERROR;
+    }
+
+    /* Convert the ECF latitude and longitude in radians to projection in
+       meters */
+    status = ias_geo_transform_coordinate(radians2map, ef_lon, ef_lat,
+        &ef_x, &ef_y);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Converting ECF latitude and longitude to projection "
+            "in meters");
+        return ERROR;
+    }
+
+    /* Convert the true latitude and longitude in degrees to projection in
+       meters */
+    true_lon = gcp_struct[gcp_num].longitude;
+    true_lat = gcp_struct[gcp_num].latitude;
+    status = ias_geo_transform_coordinate(degrees2map, true_lon, true_lat,
+        &true_x, &true_y);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Converting the true latitude and longitude to "
+            "projection in meters");
+        return ERROR;
+    }
+
+    /* Subtract the projection and assign to residual */
+    gcp_struct[gcp_num].residual_x = ef_x - true_x;
+    gcp_struct[gcp_num].residual_y = ef_y - true_y;
+
+    return SUCCESS;
+}

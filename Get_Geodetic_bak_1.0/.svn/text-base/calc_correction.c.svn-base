@@ -1,0 +1,467 @@
+/******************************************************************************
+NAME:           calc_correction 
+
+Purpose:        Solve the attitude and/or ephemerides correction using the
+                Ground Control Points;
+
+RETURN VALUE:
+SUCCESS         Successfully calculated the attitude and/or ephemerides
+                correction data.
+ERROR           No correction data found
+
+Note:
+The residual file may be written to several times if the parameter flag is not
+set to weight.  The iterations are run through.  If the outlier requirements
+are not met, start the iterations over and write the current residual
+information to the file.  The file is closed and reopened to write the new data.
+*******************************************************************************
+                       Property of the U.S. Government
+                           USGS EROS Data Center
+******************************************************************************/
+#include <stdlib.h>
+#include <math.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_los_model.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+
+int calc_correction
+(
+    PARAM_FLAG param_flag,      /* I: Flag for parameterization option */
+    int est_time_flag,          /* I: Flag for estimating position and
+                                      attitude rates */
+    double ref_time,            /* I: Reference time for the correction (when
+                                      rate is estimated) in seconds */
+    int num_gcp,                /* I: Number of GCPs */
+    const double apr_observe_sig[],
+                                /* I: A prior observation standard error
+                                      [0] across track [1] along track */
+    const char *rfilename,      /* I: Residual file */
+    int maxiter,                /* I: Maximum number of iterations */
+    double threshold,           /* I: Outlier probability threshold */
+    double radius,              /* I: Radius of the Earth in meters */
+    double height,              /* I: Height of satellite in meters */
+    IAS_LOS_MODEL *model,       /* I: OLI model */
+    GCP_STRUCT gcp_struct[],    /* I/O: Structures containing GCP information */
+    PRECISION_CORRECTIONS *precision_corr,
+                                /* O: Precision corrections */
+    double *post_sig,           /* O: Posterior noise level sigma */
+    int *sufficient_gcps_found_flag /* O: flag to indicate enough GCPs were
+                                          found for the solution */
+)
+{
+    double diff_time;           /* Intermediate variable for time difference */
+    double nr;                  /* Degree of freedom for alpha and beta */
+    double cov_mx[NPARMS][NPARMS];  /* Solution covariance matrix */
+    double sol_Ya[NPARMS];      /* Solution estimate vector */
+    double tot_Yb[NPARMS];      /* Total estimate vector */
+    double wgt_fact_obs;        /* Weight factors for observation information */
+    double wgt_fact_apr;        /* Weight factors for a priori information */
+    double **ptr_cov_mx;        /* Double pointer to 2D array normal matrix */
+    double **obs_mx;            /* The observation part of the normal matrix */
+    double delta;               /* Across-track look angle (line-of-sight)
+                                   (radians) */
+    double psi;                 /* Along-track look angle (line-of-sight)
+                                   (radians) */
+    double alpha;               /* Across-track Residual (micro-radians) */
+    double beta;                /* Along-track Residual (micro-radians) */
+    double errcon;              /* Error control for iteration conversion */
+    double last_con;            /* Divergence Control for iterations */
+    double rms[2];              /* X and Y RMS residuals in ground units */
+    NORMAL_STRUCT normal;       /* Normal equation information */
+    FILE *rfp = NULL;           /* Residual file structure */
+    int i, j, iter;             /* Loop control variables */
+    int n_parm;                 /* Number of parameters in solution */
+    int new_outliers;           /* Number of new outliers for one iteration */
+    int tot_outliers;           /* Total number outliers detected */
+    int status;                 /* Error return status */
+    int diverge = FALSE;        /* Solution divergence flag */
+
+    /* Initialize the correction parameter structure. Zero out all of the
+       vectors in the PREC structure */
+    precision_corr->satpos.x = 0.0;
+    precision_corr->satpos.y = 0.0;
+    precision_corr->satpos.z = 0.0;
+    precision_corr->satvel.x = 0.0;
+    precision_corr->satvel.y = 0.0;
+    precision_corr->satvel.z = 0.0;
+    precision_corr->rpyangle.x = 0.0;
+    precision_corr->rpyangle.y = 0.0;
+    precision_corr->rpyangle.z = 0.0;
+    precision_corr->rpyrate.x = 0.0;
+    precision_corr->rpyrate.y = 0.0;
+    precision_corr->rpyrate.z = 0.0;
+
+    /* Prepare for writing the residuals to a file */
+    status = write_init(num_gcp);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Preparing for writing the residuals to a file");
+        return ERROR;
+    }
+
+    /* Outlier detection and rejection iteration loop */
+    if ((param_flag == ATT_ORB) || (param_flag == EPH_YAW))
+        n_parm = 4;
+    else
+        n_parm = 6;
+    if (est_time_flag == 1)
+        n_parm *= 2;
+
+    do
+    {
+        new_outliers = 0;
+
+        /* Close the residual file, if it is open. The file will not be
+           opened the first time through.  After that it will need to be
+           closed before continuing to process. */
+        if ( rfp != NULL )
+        {
+            if (fclose(rfp) != 0)
+            {
+                IAS_LOG_ERROR("Closing residual file %s", rfilename );
+                write_free();
+                return ERROR;
+            }
+        }
+
+
+        /* Open the residuals file */
+        rfp = fopen(rfilename, "w");
+        if (rfp == NULL)
+        {
+            IAS_LOG_ERROR("Unable to open residual file: %s", rfilename );
+            write_free();
+            return ERROR;
+        }
+
+        /* Reset the GCPs to their original state */
+        reset_observe_angle(num_gcp, gcp_struct);
+
+        /* Initialize weight factor for observation and a priori parameters
+         * */
+        normal.apr_wgt_fact = 1.0;
+        for(i = 0; i < 2; i++)
+            normal.obs_wgt[i] = 1.0 / (apr_observe_sig[i] * apr_observe_sig[i]);
+        for(j = 0; j < NPARMS; j++)
+            tot_Yb[j] = 0.0;
+
+        /* Iterate the precision correction solution process */
+        iter = 0;
+        last_con = 1.0e6;  /* A large number to start with */
+
+        /* Do until the number of iterations is equal to the maximum
+           iterations or the error control value is below minimum */
+        do
+        {
+            new_outliers = 0;
+
+            /* Initialize the normal equation.  tot_Yb is added to restrain
+               the net correction and force convergence (js) */
+            status = initialize_precision(param_flag, est_time_flag,
+                    precision_corr, tot_Yb, &normal);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Initializing the normal matrix");
+                write_free();
+                fclose(rfp);
+                return ERROR;
+            }
+
+            /* Accumulate the normal equation by adding up
+               information from each GCP */
+            tot_outliers = 0;
+            for (i = 0; i < num_gcp; i++)
+            {
+                /* skip invalid points */
+                if (gcp_struct[i].accept_flag == INVALID_POINT)
+                {
+                    tot_outliers++;
+                    continue;
+                }
+
+                diff_time = gcp_struct[i].time - ref_time;
+                delta = gcp_struct[i].delta;
+                psi = gcp_struct[i].psi;
+                if (gcp_struct[i].accept_flag == OUTLIER_POINT)
+                    tot_outliers++;
+
+                /* Compute the observables, relate them to the
+                   correction parameters, and then form the normal equation
+                   to accumulate Outlier flag and PD array. */
+                status = process_one_gcp(&(gcp_struct[i].satpos),
+                        &(gcp_struct[i].satvel), &(gcp_struct[i].satatt),
+                        &(gcp_struct[i].gcp_position),
+                        gcp_struct[i].accept_flag, param_flag, est_time_flag,
+                        diff_time, delta, psi, radius, height, &normal,
+                        gcp_struct[i].apd, gcp_struct[i].bpd, &alpha, &beta);
+                if (status != SUCCESS)
+                {
+                    /* Declare the point an outlier if processing fails */
+                    if (gcp_struct[i].accept_flag == GOOD_POINT)
+                        tot_outliers++;
+                    gcp_struct[i].accept_flag = INVALID_POINT;
+                    IAS_LOG_WARNING("Declaring failed GCP an outlier");
+                }
+
+                /* Record the observation for later residual calculation */
+                gcp_struct[i].alpha = alpha;
+                gcp_struct[i].beta = beta;
+            }
+
+            /* Write out the residual information for this iteration */
+            if (write_residuals(iter, rfp, num_gcp, model, gcp_struct, rms)
+                    != SUCCESS)
+            {
+                IAS_LOG_ERROR("Returned from write_residuals");
+                write_free();
+                fclose(rfp);
+                return ERROR;
+            }
+
+            if (iter == 0)
+            {
+                precision_corr->rms_prefit[0] = rms[0];
+                precision_corr->rms_prefit[1] = rms[1];
+            }
+
+            /* Assign double pointers for Normal equation manipulation */
+            ptr_cov_mx = malloc(NPARMS * sizeof(double*));
+            obs_mx = malloc(NPARMS * sizeof(double*));
+
+            if ((!ptr_cov_mx) || (!obs_mx))
+            {
+                IAS_LOG_ERROR("Allocating memory for the nomal matrix");
+                write_free();
+                fclose(rfp);
+                return ERROR;
+            }
+
+            /* Solve for the corrections from the normal equation */
+            wgt_fact_obs = 1.0;
+            wgt_fact_apr = 1.0;
+
+            for(i = 0; i < NPARMS; i++)
+            { 
+                ptr_cov_mx[i] = cov_mx[i];
+                obs_mx[i] = normal.obs_mx[i];
+            }
+
+            status = solve_weighted_least_square((const double **)obs_mx,
+                    normal.obs_rgt, normal.apr_wgt_par, normal.apr_corr,
+                    NPARMS, wgt_fact_obs, wgt_fact_apr, ptr_cov_mx, sol_Ya);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("No initial weighted least squared  solution "
+                        "obtained");
+                free( ptr_cov_mx );
+                ptr_cov_mx = NULL;
+                free(obs_mx);
+                obs_mx = NULL;
+                write_free();
+                fclose(rfp);
+                return ERROR;
+            }
+
+            switch (param_flag) 
+            {
+                case WEIGHT:
+
+                    /* Try Minimum Norm Quadratic Unbiased Estimate (MINQUE) */
+                    status = compute_min_quadratic_estimate(normal.obs_num,
+                            normal.obs_vwv, (const double **)obs_mx,
+                            normal.obs_rgt, normal.apr_wgt_par,
+                            normal.apr_corr, NPARMS, ptr_cov_mx, sol_Ya,
+                            &wgt_fact_obs, &wgt_fact_apr, post_sig);
+                    if (status != SUCCESS)
+                    {
+                        IAS_LOG_ERROR("Calculating minimum quadratic "
+                                "variance estimate");
+                        free( ptr_cov_mx );
+                        ptr_cov_mx = NULL;
+                        free(obs_mx);
+                        obs_mx = NULL;
+                        write_free();
+                        fclose(rfp);
+                        return ERROR;
+                    }
+                    if(*post_sig > 0.0)
+                    {
+                        *post_sig = normal.obs_vwv;
+                        compute_residual_square_sum((const double **)obs_mx,
+                                normal.obs_rgt, sol_Ya, NPARMS, post_sig);
+                    }
+
+                    /* MINQUE failed, try Maximum Likelihood Estimate (MLHE) */
+                    else 
+                    {
+                        status = compute_max_likelihood_estimate(normal.obs_num,
+                                normal.obs_vwv, (const double **)obs_mx,
+                                normal.obs_rgt, normal.apr_wgt_par,
+                                normal.apr_corr, NPARMS, sol_Ya, ptr_cov_mx,
+                                &wgt_fact_obs, &wgt_fact_apr, post_sig);
+                        if (status != SUCCESS)
+                        {
+                            IAS_LOG_ERROR("Calculating maximum liklihood "
+                                    "variance estimate");
+                            free( ptr_cov_mx );
+                            ptr_cov_mx = NULL;
+                            free(obs_mx);
+                            obs_mx = NULL;
+                            write_free();
+                            fclose(rfp);
+                            return ERROR;
+                        }
+                        if(*post_sig == 0.0)
+                        {
+                            IAS_LOG_ERROR("Both minimum quadratic and "
+                                    "maximum liklihood estimates failed");
+                            free( ptr_cov_mx );
+                            ptr_cov_mx = NULL;
+                            free(obs_mx);
+                            obs_mx = NULL;
+                            write_free();
+                            return ERROR;
+                        }
+                    }
+
+                    /* Calculate the posteriori standard error. */
+                    nr = normal.obs_num;
+                    *post_sig = *post_sig / nr;
+                    break;
+
+                    /* For case where no a priori weight is used, no need to
+                       estimate weight. */
+                default:
+                    *post_sig = normal.obs_vwv;
+                    compute_residual_square_sum((const double **)obs_mx,
+                            normal.obs_rgt, sol_Ya, NPARMS, post_sig);
+                    nr = normal.obs_num;
+                    *post_sig = *post_sig / nr;
+                    break;
+            }
+
+            free(ptr_cov_mx);
+            ptr_cov_mx = NULL;
+            free(obs_mx);
+            obs_mx = NULL;
+
+            /* Update the total correction estimate. */
+            for(j = 0; j < NPARMS; j++)
+                tot_Yb[j] += sol_Ya[j];
+
+            /* Update the observable and orbit state for each GCP. */
+            reset_observe_angle(num_gcp, gcp_struct);
+            status = update_observe_angle(num_gcp, tot_Yb, ref_time,
+                    gcp_struct);
+            if (status != SUCCESS)
+            {
+                IAS_LOG_ERROR("Updating observable vector and angles");
+                write_free();
+                fclose(rfp);
+                return ERROR;
+            }
+
+            /* Calculate the convergency error to see
+               whether to stop the iteration. */
+            errcon = 0.0;
+            for(i = 0; i < NPARMS; i++)
+                errcon += fabs(sol_Ya[i]);
+
+            iter++;
+
+            /* Flag whether the solution seems to be diverging */
+            if (iter > 2 && errcon > last_con)
+            {
+                diverge = TRUE;
+            }
+            else
+            {
+                diverge = FALSE;
+            }
+
+            last_con = errcon;
+
+        } while(errcon > 1.0 && iter < maxiter);
+
+        /* Calculate residual in alpha and beta for each GCP. */
+        status = observation_residual(num_gcp, sol_Ya, ref_time, radius, height,
+                gcp_struct);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Calculating observation residuals");
+            write_free();
+            fclose(rfp);
+            return ERROR;
+        }
+
+        /* Check for outliers and iterate entire process if there
+           are any new ones, the following routine will return one if any
+           outliers are found or zero if no outliers are found. */
+        status = determine_worst_outlier(threshold, n_parm, num_gcp, cov_mx,
+                *post_sig, apr_observe_sig, gcp_struct, &new_outliers);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Checking for outliers");
+            write_free();
+            fclose(rfp);
+            return ERROR;
+        }
+        tot_outliers += new_outliers;
+
+    } while(new_outliers > 0 && 2 * (num_gcp-tot_outliers) > n_parm);
+
+    /* Check the final divergence flag to see if the solution was healthy */
+    if (diverge == TRUE)
+    {
+        IAS_LOG_WARNING("Warning: Final solution was diverging");
+    }
+
+    /* Check the final iteration limit to see if the solution was healthy */
+    if (iter >= maxiter)
+    {
+        IAS_LOG_WARNING("Warning: Final solution terminated due to iteration "
+                "limit - may not have fully converged");
+    }
+
+    /* Extract the final solution and update the correction parameters */
+    get_correction(ref_time, param_flag, cov_mx, tot_Yb, *post_sig,
+            precision_corr);
+
+    status = write_residuals(-1, rfp, num_gcp, model, gcp_struct,
+            precision_corr->rms_postfit);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Writing final residual information");
+        write_free();
+        fclose(rfp);
+        return ERROR;
+    }
+
+    /* Free the memory allocated for write_residuals() */
+    write_free();
+    if (fclose(rfp) != 0)
+    {
+        IAS_LOG_ERROR("Closing residual file: %s", rfilename );
+        return ERROR;
+    }
+
+    /* Compute the final number of good GCPs */
+    precision_corr->num_valid_gcp = num_gcp - tot_outliers;
+
+    /* Confirm enough valid GCPs were used to make a good solution */
+    if (2 * precision_corr->num_valid_gcp <= n_parm)
+    {
+        IAS_LOG_WARNING("Insufficient valid control points available for a "
+                " precision solution (found %d, need more than %d)",
+                precision_corr->num_valid_gcp, n_parm / 2);
+        *sufficient_gcps_found_flag = 0;
+    }
+    else
+    {
+        *sufficient_gcps_found_flag = 1;
+    }
+
+    return SUCCESS;
+}

@@ -1,0 +1,603 @@
+/*----------------------------------------------------------------------------
+NAME:    read_parameters.c
+
+PURPOSE: Reads the input parameters from the parameter file and OMF
+
+RETURNS: SUCCESS or ERROR
+         EXIT_SUCCESS if user asked for help
+
+The following getter routines are implemented in this file:
+
+    These return interger true = 1 or false = 0
+        get_residual_characterization_flag
+        get_solution_alignment_characterization_flag
+        get_terrain_flag
+        get_time_rate_estimation_flag
+
+    These return a pointer to char:
+        get_cpf_filename
+        get_dem_filename
+        get_gcp_data_filename
+        get_grid_filename
+        get_l0r_filename
+        get_l1g_filename
+        get_omf_filename
+        get_prec_model_filename
+        get_residual_filename
+        get_solution_filename
+        get_syst_model_filename
+        get_work_order_id
+
+    This returns a float:
+        get_outlier_threshold
+
+    These return an int:
+        get_max_iterations
+        get_processing_pass
+
+    This returns the enumerated type PARAM_FLAG:
+        get_parameter_option
+
+    These fill the passed argument:
+        get_doq_observation_sigma_apri
+        get_gls_observation_sigma_apri
+        get_precision_corr_information
+
+The following setter routine is implemented in this file:
+        set_terrain_flag
+
+----------------------------------------------------------------------------*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <string.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_satellite_attributes.h"
+#include "ias_parm.h"
+#include "ias_parm_standard_parameters.h"
+#include "gcp_struct.h"
+#include "correct_los_model.h"
+#include "ias_cpf.h"
+
+/*--- Local static variables that can be retrieved through getter routines ---*/
+static char omf_filename[PATH_MAX];         /* OMF file name */
+static char l0r_filename[PATH_MAX];         /* L0R image file name */
+static char l1g_filename[PATH_MAX];         /* L1G image file name */
+static char dem_filename[PATH_MAX];         /* DEM file name */
+static char grid_filename[PATH_MAX];        /* Grid file name */
+static char syst_model_filename[PATH_MAX];  /* OLI model file name */
+static char prec_model_filename[PATH_MAX];  /* Precision file name */
+static char gcp_data_filename[PATH_MAX];    /* GCP data file name */
+static char solution_filename[PATH_MAX];    /* Solution file name */
+static char residual_filename[PATH_MAX];    /* Residual file name */
+static char cpf_filename[PATH_MAX];         /* CPF file name */
+static char work_order_id[IAS_WORKORDER_ID_SIZE];
+                                            /* Work order ID */
+static int max_iterations;                  /* Maximum number of iterations */
+static double outlier_threshold;            /* Outlier threshold */
+static double attitude_apri[NPARMS];        /* List of a priori mean and sigma
+                                               for attitude in micro-radians
+                                               and micro-radian/second,
+                                               respectively */
+static double ephemeris_apri[NPARMS];       /* List of a priori mean and sigma
+                                               for ephemeris in meters and
+                                               meters/second, respectively */
+static double doq_observation_sigma_apri[IAS_CPF_LOS_OBSERVATION_APRI_COUNT];
+                                            /* across-track[0] & along-track[1]
+                                               observation precision (DOQ) */
+static double gls_observation_sigma_apri[IAS_CPF_LOS_OBSERVATION_APRI_COUNT];
+                                            /* across-track[0] & along-track[1]
+                                               observation precision (GLS) */
+static int store_in_database_flag;
+static int precision_required_flag;
+static int terrain_flag;
+static int time_rate_estimation_flag;
+static PARAM_FLAG parameter_option;         /* Enumerated type conversion of
+                                               the parameterization option */
+static int processing_pass;                 /* Processing pass number from the 
+                                               parameter file */
+
+/*----------- read_parameters ------------*/
+int read_parameters
+(
+    const char *parameter_filename,        /* I: Name of the parameter file */
+    IAS_CPF **cpf                          /* O: cpf structure */
+)
+{
+    int i;                          /* Loop counter */
+    int status;                     /* Status of return from function */
+    int number_of_parameters;       /* Number of parameters to read or read
+                                       from parameter files */
+    PARAM_FLAG index;               /* Index used to convert input parameter
+                                       string into an enumerated type */
+    char param_option_flag[8];      /* Flag to indicate parameterization option:
+        att_orb = estimate attitude plus orbital height correction
+        eph_yaw = estimate ephemeris plus yaw attitude correction
+        both = estimate both attitude and ephemeris corrections
+        weight = estimate both corrections using weight factors */
+    char est_time_flag_t[4];        /* Flag to indicate the time rate
+                                       estimation:
+                                       no = not to estimate velocity correction
+                                       yes = estimate velocity correction */
+    IAS_SATELLITE_ID satellite_id;  /* Used to initialize the attributes lib */
+    int satellite_number;           /* Satellite number being processed */
+
+    const struct IAS_CPF_LOS_MODEL_CORRECTION *cpf_los_model;
+                                    /* los model correction cpf parameters */
+    const struct IAS_CPF_GEO_SYSTEM *geo_sys;
+                                    /* geo system cpf parameters */ 
+
+    /* -------------------- Define the parameter table -------------------- */
+    IAS_PARM_DECLARE_TABLE(parms, 14);
+
+    /* Add the work order ID */
+    IAS_PARM_WORK_ORDER_ID(parms, work_order_id, sizeof(work_order_id), 1);
+
+    /* Get processing pass */
+    IAS_PARM_PROCESSING_PASS(parms, &processing_pass,
+            sizeof(processing_pass), 0);
+
+    /* Add the precision model file name */
+    const char *default_precision_model_filename[] = {"precision_model.h5"};
+    IAS_PARM_ADD_STRING(parms, PRECISION_MODEL_FILENAME,
+            "LOS correction precision model file name",
+            IAS_PARM_REQUIRED,
+            0, NULL, /* no limits */
+            1, default_precision_model_filename, /* default */
+            prec_model_filename, sizeof(prec_model_filename), 1);
+
+    /* Add the a priori mean and sigma for attitude */
+    IAS_PARM_ADD_DOUBLE(parms, ATTITUDE_APRI, "List of a priori mean and "
+            "sigma for attitude in micro-radians and micro-radian/second "
+            "respectively, optionally used to override the CPF Attitude_Apri "
+            "values",
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY,
+            0, 0, 0, /* no limits */
+            0, NULL, attitude_apri, sizeof(attitude_apri), NPARMS);
+
+    /* Add the a priori mean and sigma for ephemeris */
+    IAS_PARM_ADD_DOUBLE(parms, EPHEMERIS_APRI, "List of a priori mean and "
+            "sigma for ephemeris in meters and meters/second respectively, "
+            "optionally used to override the CPF Ephemeris_Apri values",
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY,
+            0, 0, 0, /* no limits */
+            0, NULL, ephemeris_apri, sizeof(ephemeris_apri), NPARMS);
+
+    /* Add the a priori observed sigmas */
+    /* [0] is across-track, [1] is along-track */
+    IAS_PARM_ADD_DOUBLE(parms, OBSERVATION_APRI, "List of a priori observation "
+            "sigma for observation in micro-radians, optionally used to "
+            "override the CPF DOQ_Observation_Apri and GLS_Observation_Apri "
+            "values",
+            IAS_PARM_OPTIONAL, IAS_PARM_ARRAY,
+            0, 0, 0, /* no limits */
+            0, NULL, doq_observation_sigma_apri, 
+            sizeof(doq_observation_sigma_apri),
+            IAS_CPF_LOS_OBSERVATION_APRI_COUNT);
+
+    /* Add the iteration limit */
+    int default_max_iterat[] = {10};
+    IAS_PARM_ADD_INT(parms, MAX_ITER, "Maximum number of iterations",
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY,
+            0, 0, 0, /* no limits */
+            1, default_max_iterat, /* default */
+            &max_iterations, sizeof(max_iterations), 0);
+
+    /* Add the outlier threshold */
+    IAS_PARM_ADD_DOUBLE(parms, OUTLIER_THRESHOLD, "Outlier threshold, "
+            "optionally used to override the CPF Percent_Outlier_Threshold "
+            "value",
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY,
+            1, 0.0, 1.0, /* limited to the range 0.0 to 1.0 */
+            0, NULL, /* no default */
+            &outlier_threshold, sizeof(outlier_threshold), 1);
+
+    /* Add the parameterization option */
+    const char *default_parameter_flag[] = {"BOTH"};
+    const char *valid_parameter_flags[] = {"ATT_ORB", "EPH_YAW", "BOTH",
+        "WEIGHT"};
+    IAS_PARM_ADD_STRING(parms, PARM_FLAG, "Flag to indicate parameterization "
+            "estimate option: "
+            "ATT_ORB = attitude plus orbital height correction, "
+            "EPH_YAW = ephemeris plus yaw attitude correction, "
+            "BOTH = both attitude and ephemeris corrections, "
+            "WEIGHT = both corrections using weight factors",
+            IAS_PARM_OPTIONAL,
+            4, valid_parameter_flags, /* list of valid values */
+            1, default_parameter_flag, /* default */
+            param_option_flag, sizeof(param_option_flag), 1);
+
+    /* Add the rate of change correction option */
+    const char *valid_time_options[] = {"YES", "NO"};
+    const char *default_time_option[] = {"YES"};
+    IAS_PARM_ADD_STRING(parms, TIME_FLAG, "Bias correction or rate of change "
+            "option: NO = not to estimate velocity correction, "
+            "YES = estimate velocity correction",
+            IAS_PARM_OPTIONAL,
+            2, valid_time_options, /* list of valid values */
+            1, default_time_option, /* default */
+            est_time_flag_t, sizeof(est_time_flag_t), 1);
+
+    /* Add the output solution file name */
+    const char *default_solution_filename[] = {"precision.solution"};
+    IAS_PARM_ADD_STRING(parms, OUT_SOLUTION, "Output solution file name",
+            IAS_PARM_OPTIONAL,
+            0, NULL, /* no limits */
+            1, default_solution_filename, /* default */
+            solution_filename, sizeof(solution_filename), 1);
+
+    /* Add the residuals file name */
+    const char *default_residual_filename[] = {"precision.residuals"};
+    IAS_PARM_ADD_STRING(parms, RESIDUAL_FILENAME, 
+            "Output control point residuals file name",
+            IAS_PARM_REQUIRED,
+            0, NULL, /* no limits */
+            1, default_residual_filename, /* default */
+            residual_filename, sizeof(residual_filename), 1);
+
+    /* Add the database storage flag */
+    IAS_PARM_STORE_CHARACTERIZATION_IN_DB(parms, IAS_PARM_OPTIONAL,
+            &store_in_database_flag, sizeof(store_in_database_flag),
+            0);
+
+    /* Flag indicating a precision model is required */
+    int precision_required_flag_default_value = 0;
+    IAS_PARM_ADD_INT(parms, PRECISION_REQUIRED_FLAG, "Flag which indicates "
+            "a precision solution is required", 
+            IAS_PARM_OPTIONAL, IAS_PARM_NOT_ARRAY,
+            /* has a limited range of 0-1 */
+            1, 0, 1,
+            /* default is 0 -- not required */
+            1, &precision_required_flag_default_value,
+            &precision_required_flag,
+            sizeof(precision_required_flag), 1);
+
+    /* See if the user wanted help or a template */
+    status = ias_parm_provide_help(parameter_filename, parms,
+            IAS_PARM_GET_TABLE_SIZE(parms), IAS_INPUT_PARAMETERS);
+    if (status == 1)
+    {
+        /* Copy the input parameter to the OMF file name */
+        strcpy(omf_filename, parameter_filename);
+    }
+    else if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Returned from parameter file help");
+        return ERROR;
+    }
+    else
+    {
+        /* Read the parameter file */
+        number_of_parameters = IAS_PARM_GET_TABLE_SIZE(parms);
+        status = ias_parm_read(parameter_filename, parms, number_of_parameters);
+        if (status != SUCCESS)
+        {
+            IAS_LOG_ERROR("Reading parameters from: %s", parameter_filename);
+            return ERROR;
+        }
+
+        /* Build the OMF file name */
+        sprintf(omf_filename, "%s.omf", work_order_id);
+    }
+
+    /* -------------------- Define the OMF table -------------------- */
+    IAS_PARM_DECLARE_TABLE(omf_parms, 8);
+
+    /* 1 Add the Level 1G file name */
+    IAS_PARM_L1G_FILENAME_FROM_PASS(omf_parms, IAS_PARM_REQUIRED,
+            l1g_filename, sizeof(l1g_filename), 1, processing_pass);
+
+    /* 2 Add the CPF file name */
+    IAS_PARM_CPF(omf_parms, IAS_PARM_REQUIRED,
+            cpf_filename, sizeof(cpf_filename), 1);
+
+    /* 3 Add the DEM file name */
+    IAS_PARM_DEM_FILENAME_FROM_PASS(omf_parms, IAS_PARM_OPTIONAL,
+            dem_filename, sizeof(dem_filename), 1, processing_pass);
+
+    /* 4 Add the grid file name */
+    IAS_PARM_GRID_FILENAME_FROM_PASS(omf_parms, IAS_PARM_REQUIRED,
+            grid_filename, sizeof(grid_filename), 1, processing_pass);
+
+    /* 5 Add the Level 0R file name */
+    IAS_PARM_L0R_FILENAME(omf_parms, IAS_PARM_OPTIONAL, l0r_filename,
+            sizeof(l0r_filename), 1);
+
+    /* 6 Add the measured GCP file name */
+    IAS_PARM_MEASURED_GCP_FILENAME_FROM_PASS(omf_parms, gcp_data_filename,
+            sizeof(gcp_data_filename), 0, processing_pass);
+
+    /* 7 Add the systematic model file name */
+    IAS_PARM_MODEL_FILENAME_FROM_PASS(omf_parms, IAS_PARM_REQUIRED,
+            syst_model_filename, sizeof(syst_model_filename), 1,
+            processing_pass);
+
+    /* 8 Add the satellite number */
+    IAS_PARM_SATELLITE(omf_parms, &satellite_number,
+            sizeof(satellite_number), 1);
+
+    /* Again check for help with the OMF file */
+    status = ias_parm_provide_help(omf_filename, omf_parms,
+            IAS_PARM_GET_TABLE_SIZE(omf_parms), IAS_OMF_PARAMETERS);
+    if (status == 1)
+    {
+        exit(EXIT_SUCCESS);
+    } 
+    else if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Returned from OMF parameter file help");
+        return ERROR;
+    }
+
+    /* Read the OMF file */
+    number_of_parameters = IAS_PARM_GET_TABLE_SIZE(omf_parms);
+    status = ias_parm_read(omf_filename, omf_parms, number_of_parameters);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Reading parameters from: %s", omf_filename);
+        return ERROR;
+    }
+
+    /* Set the parameterization option */
+    for (index = 0; index < NUMBER_PARM_FLAGS; index++)
+    {
+        if (strcasecmp(param_option_flag, valid_parameter_flags[index]) == 0)
+        {
+            parameter_option = index;
+            break;
+        }
+    }
+
+    /* Set the time rate estimation flag */
+    if (strcasecmp(est_time_flag_t, "YES") == 0)
+        time_rate_estimation_flag = 1;
+    else
+        time_rate_estimation_flag = 0;
+
+    /* Set the terrain flag */
+    if (IAS_PARM_GET_COUNT_READ(omf_parms, DEM_FILENAME) == 1)
+        terrain_flag = 1;
+    else
+        terrain_flag = 0;
+
+    /* Get the satellite ID */
+    satellite_id = ias_sat_attr_get_satellite_id_from_satellite_number(
+            satellite_number);
+    if (satellite_id == ERROR)
+    {
+        IAS_LOG_ERROR("Unable to determine satellite ID from satellite "
+                "number %d", satellite_number);
+        return ERROR;
+    }
+
+    /* Since the only purpose for retrieving the satellite ID is to
+       initialize the library, do that here */
+    status = ias_sat_attr_initialize(satellite_id);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Initializing IAS Satellite Attributes Library");
+        return ERROR;
+    }
+   
+    /* Exit if the CPF filename is empty */
+    if (strcmp (get_cpf_filename(), "") == 0)
+    {
+        IAS_LOG_ERROR("No CPF filename provided in the OMF file.");
+        return ERROR;
+    }
+
+    /* Now read and check the CPF. */
+    *cpf = ias_cpf_read(get_cpf_filename());
+
+    if (!*cpf)
+    {
+        IAS_LOG_ERROR("Cannot open CPF file %s for reading.", 
+            get_cpf_filename());
+        ias_cpf_free(*cpf);
+        return ERROR;
+    }
+
+    /* Get the group from  the CPF */
+    cpf_los_model = ias_cpf_get_los_model_correction(*cpf);
+    if (!cpf_los_model)
+    {
+        IAS_LOG_ERROR("Getting LOS model correction group from CPF %s",
+            get_cpf_filename());
+        ias_cpf_free(*cpf);
+        return ERROR;
+    }
+
+    geo_sys = ias_cpf_get_geo_system(*cpf);
+    if (!geo_sys)
+    {
+        IAS_LOG_ERROR("Getting Geo Syatem group from CPF %s",
+            get_cpf_filename());
+        ias_cpf_free(*cpf);
+        return ERROR;
+    }
+
+    /* Retrieve values from the CPF as needed */
+    if (IAS_PARM_GET_COUNT_READ(parms, ATTITUDE_APRI) == 0)
+    {
+        for (i = 0; i < AEPARMS; i++)
+        {
+            attitude_apri[i] = cpf_los_model->attitude_apri[i];
+            attitude_apri[i + AEPARMS] 
+                    = cpf_los_model->attitude_apri[i + AEPARMS];
+        }
+    }
+
+    if (IAS_PARM_GET_COUNT_READ(parms, EPHEMERIS_APRI) == 0)
+    {
+        for (i = 0; i < AEPARMS; i++)
+        {
+            ephemeris_apri[i] = cpf_los_model->ephemeris_apri[i];
+            ephemeris_apri[i + AEPARMS] 
+                    = cpf_los_model->ephemeris_apri[i + AEPARMS];
+        }
+    }
+
+    if (IAS_PARM_GET_COUNT_READ(parms, OBSERVATION_APRI) == 0)
+    {
+        doq_observation_sigma_apri[0] = cpf_los_model->doq_observation_apri[0];
+        doq_observation_sigma_apri[1] = cpf_los_model->doq_observation_apri[1];
+        gls_observation_sigma_apri[0] = cpf_los_model->gls_observation_apri[0];
+        gls_observation_sigma_apri[1] = cpf_los_model->gls_observation_apri[1];
+    }
+    else
+    {
+        gls_observation_sigma_apri[0] = doq_observation_sigma_apri[0];
+        gls_observation_sigma_apri[1] = doq_observation_sigma_apri[1];
+
+    }
+
+    if (IAS_PARM_GET_COUNT_READ(parms, OUTLIER_THRESHOLD) == 0)
+        outlier_threshold = geo_sys->percent_outlier_threshold;
+
+    return SUCCESS;
+}
+
+/***********************************************************************
+    Functions used to access the ODL parameter file values
+***********************************************************************/
+int get_store_in_database_flag(void)
+{
+    return store_in_database_flag;
+}
+
+int get_precision_required_flag(void)
+{
+    return precision_required_flag;
+}
+
+char *get_l1g_filename(void)
+{
+    return l1g_filename;
+}
+
+char *get_grid_filename(void)
+{
+    return grid_filename;
+}
+
+char *get_syst_model_filename(void)
+{
+    return syst_model_filename;
+}
+
+char *get_prec_model_filename(void)
+{
+    return prec_model_filename;
+}
+
+char *get_solution_filename(void)
+{
+    return solution_filename;
+}
+
+char *get_residual_filename(void)
+{
+    return residual_filename;
+}
+
+char *get_cpf_filename(void)
+{
+    return cpf_filename;
+}
+
+char *get_gcp_data_filename(void)
+{
+    return gcp_data_filename;
+}
+
+char *get_dem_filename(void)
+{
+    return dem_filename;
+}
+
+char *get_omf_filename(void)
+{
+    return omf_filename;
+}
+
+char *get_l0r_filename(void)
+{
+    return l0r_filename;
+}
+
+float get_outlier_threshold(void)
+{
+    return (float)outlier_threshold;
+}
+
+int get_terrain_flag(void)
+{
+    return terrain_flag;
+}
+
+void set_terrain_flag
+(
+    int flag_value     /* I: Value to set true = 1 or false = 0 */
+)
+{
+    terrain_flag = flag_value;
+}
+
+PARAM_FLAG get_parameter_option(void)
+{
+    return parameter_option;
+}
+
+int get_time_rate_estimation_flag(void)
+{
+    return time_rate_estimation_flag;
+}
+
+int get_max_iterations(void)
+{
+    return max_iterations;
+}
+
+void get_precision_corr_information
+(
+    PRECISION_CORRECTIONS *precision_corr      /* O: Filled structure */
+)
+{
+    int i;
+    for (i = 0; i < AEPARMS; i++)
+    {
+        precision_corr->apri_att_mean[i] = attitude_apri[i];
+        precision_corr->apri_att_sigma[i] = attitude_apri[i + AEPARMS];
+        precision_corr->apri_eph_mean[i] = ephemeris_apri[i];
+        precision_corr->apri_eph_sigma[i] = ephemeris_apri[i + AEPARMS];
+    }
+}
+
+void get_doq_observation_sigma_apri
+(
+    double *obs_sigma_apri /* O: Filled array */
+)
+{
+    obs_sigma_apri[0] = doq_observation_sigma_apri[0];
+    obs_sigma_apri[1] = doq_observation_sigma_apri[1];
+}
+
+void get_gls_observation_sigma_apri
+(
+    double *obs_sigma_apri /* O: Filled array */
+)
+{
+    obs_sigma_apri[0] = gls_observation_sigma_apri[0];
+    obs_sigma_apri[1] = gls_observation_sigma_apri[1];
+}
+
+int get_processing_pass(void)
+{
+    return processing_pass;
+}
+
+char *get_work_order_id(void)
+{
+    return work_order_id;
+}

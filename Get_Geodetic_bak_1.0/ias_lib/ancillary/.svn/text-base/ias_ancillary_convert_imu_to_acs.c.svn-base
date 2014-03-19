@@ -1,0 +1,767 @@
+/*****************************************************************************
+Name: ias_ancillary_convert_imu_to_acs
+
+Purpose: Rotate the IMU data to the attitude control system coordinates
+         and converts from arc seconds to radians.
+
+Notes: This module converts the 4 axes of the SIRU to 3 axes. 
+
+Returns: Integer status code
+         SUCCESS:  Successful completion 
+         ERROR:    Operation failed
+*****************************************************************************/
+
+#include <stdlib.h>
+#include <math.h>
+#include "ias_const.h"
+#include "ias_logging.h"
+#include "ias_structures.h"
+#include "ias_math.h"
+#include "ias_cpf.h"
+#include "ias_geo.h"
+#include "ias_ancillary.h"
+#include "ias_ancillary_private.h"
+
+#define IMU_MAX  0x010000
+#define IMU_FILL -32768
+
+/* The SIRU clock is 4 microsecond resolution and the sync strobe is
+   1/3 microsecond resolution per ACS to FSW ICD */
+#define IMU_SYNC_RATIO 12
+
+/* Define the values for valid angular rates, and saturation/scaling valid
+   values.  0xF0 indicates valid rates for all 4 gyros.  0x00 indicates
+   there is no saturation and all the scaling bits are "low". */
+#define ANGULAR_RATE_VALID 0xF0
+#define SATURATION_AND_SCALING_VALID 0x00
+
+/* function prototypes */
+static int convert_imu_to_acs
+(
+    IAS_CPF *cpf,     /* I: CPF structure */
+    int nimu,         /* I: number of IMU points */
+    IAS_VECTOR *imu   /* I/O: IMU data */
+);
+
+static int generate_imu_to_rpy_matrix
+(
+    IAS_CPF *cpf,     /* I: CPF structure */ 
+    double *rpy       /* O: RPY matrix */
+);
+
+int ias_ancillary_convert_imu_to_acs
+(
+    IAS_CPF *cpf,                    /* I: CPF structure */
+    const IAS_L0R_IMU *l0r_imu,      /* I: IMU data from L0R */
+    int l0r_imu_count,               /* I: IMU record count from L0R */
+    int valid_quaternion_count,      /* I: Number of valid quaternions */
+    double *quaternion_time_data,    /* I: Array of quaternion times */
+    IAS_VECTOR *imu_data,            /* O: Array of IMU records */
+    double *imu_time_data,           /* O: Array of IMU seconds since j2000 */
+    int *valid_imu_flag,             /* O: Array of IMU quality flags */
+    int *imu_valid,                  /* O: Flag for valid/invalid IMU data */
+    int *imu_count                   /* O: Number of IMU records (IMU data 
+                                           arrays are of this size) */
+)
+{
+    int index;                       /* loop variable */
+    int loop_index;                  /* loop variable */
+    int imu_curr = 0;                /* current imu index */
+    int gyro_delta_counts[IAS_L0R_NUM_GYROS];/* delta angles measured by IMU */
+    int imu_last = -1;               /* index of last valid IMU measurement */
+    double gyro_samples[IAS_L0R_NUM_GYROS]; /* gyro angles */
+    double gyro_delta;               /* index offset between adjacent valid 
+                                        IMU samples */
+    double roll_pitch_yaw_matrix[3][4];/* values generated from IMU [3][4] */
+    double attitude[3];              /* attitude (roll, pitch, yaw) */
+    const IAS_L0R_IMU_SAMPLE *curr_angle = NULL;
+    const IAS_L0R_IMU_SAMPLE *last_angle = NULL;
+    const struct IAS_CPF_ANCILLARY_ENG_CONV *ancillary_eng;
+    const struct IAS_CPF_ANCILLARY_QA_THRESHOLDS *ancillary_thresholds;
+    double iru_threshold_radians[IAS_L0R_NUM_GYROS];
+                                     /* IRU QA IRU threshold in radians */
+    int imu_total;                   /* local copy of imu_count - number 
+                                        of IMU records */
+    int consecutive_invalid_count;   /* consecutive invalid IMU point count */
+    int max_consecutive_invalid_count; /* maximum consecutive invalid IMU point
+                                          count */
+
+    /* get the a2r value from the math library */
+    double a2r = ias_math_get_arcsec_to_radian_conversion();
+
+#if DEBUG_GENERATE_DATA_FILES == 1
+    FILE *fp = NULL;
+    double dr = 0.0;
+    double dp = 0.0;
+    double dy = 0.0;
+#endif
+
+    /* get the ancillary engineering conversion values from the CPF */
+    ancillary_eng = ias_cpf_get_ancil_conv(cpf);
+    if (ancillary_eng == NULL)
+    {
+        IAS_LOG_ERROR("Reading ancillary engineering conversion "
+                      "parameters from the CPF");
+        return ERROR;
+    }
+
+    /* Get the ancillary QA threshold values from the CPF */
+    ancillary_thresholds = ias_cpf_get_ancil_qa_thresholds(cpf);
+    if (ancillary_thresholds == NULL)
+    {
+        IAS_LOG_ERROR("Reading ancillary QA threshold "
+                      "parameters from the CPF");
+        return ERROR;
+    }
+
+    /* Convert the IRU threshold from arcseconds to radians */
+    for (loop_index = 0; loop_index < IAS_L0R_NUM_GYROS; loop_index++)
+    {
+        iru_threshold_radians[loop_index]
+            = ancillary_thresholds->iru_outlier_threshold[loop_index] * a2r;
+    }
+
+    if (generate_imu_to_rpy_matrix(cpf, &roll_pitch_yaw_matrix[0][0]) 
+        != SUCCESS)
+    {
+        IAS_LOG_ERROR("Converting IMU to roll, pitch, yaw matrix.");
+        return ERROR;
+    }
+
+    /* process IMU time stamps to make sure that all are valid */
+    if (ias_ancillary_process_imu_times(l0r_imu, ancillary_eng->gyro_conv_time, 
+            l0r_imu_count, imu_valid, imu_time_data) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating IMU times");
+        return ERROR;
+    }
+
+    if (!*imu_valid)
+    {
+        /* The IMU data isn't valid, so zero it out, provide a reasonable 
+           timestamp, and flag it invalid */
+        IAS_LOG_WARNING("Flagging IMU data invalid since no time syncs found");
+
+        imu_total = l0r_imu_count * IAS_L0R_NUM_SAMPLES_PER_IMU_RECORD;
+        if (valid_quaternion_count < imu_total)
+        {
+            imu_total = valid_quaternion_count;
+        }
+        for (index = 0; index < imu_total; index++)
+        {
+            valid_imu_flag[index] = 0;
+            imu_time_data[index] = quaternion_time_data[index];
+            imu_data[index].x = 0.0;
+            imu_data[index].y = 0.0;
+            imu_data[index].z = 0.0;
+        }
+    }
+
+    if (*imu_valid)
+    {
+#if DEBUG_GENERATE_DATA_FILES == 1
+        fp = fopen("anc.imu.l0r.dat", "w");
+#endif
+
+        last_angle = &(l0r_imu[0].gyro_samples[0]);
+        /* loop through L0R IMU data storing valid data within a vector data
+           structure */
+        for (index = 0, imu_total = 0, imu_curr = 0;
+             index < l0r_imu_count;
+             index++)
+        {
+            /* determine IMU flag data for the Kalman filter */
+            int sub_index; /* loop variable */
+            for (sub_index = 0; sub_index < IAS_L0R_NUM_SAMPLES_PER_IMU_RECORD;
+                 sub_index++, imu_curr++)
+            {
+                curr_angle = &(l0r_imu[index].gyro_samples[sub_index]);
+                /* Check that angular rates and saturation/scaling are valid */
+                if (curr_angle->angular_rate_valid == ANGULAR_RATE_VALID
+                    && curr_angle->saturation_and_scaling
+                        == SATURATION_AND_SCALING_VALID)
+                {
+                    /* Initialize the flag to the good value */
+                    valid_imu_flag[imu_total] = 1;
+
+                    /* Calculate angular change */
+                    if (imu_last < 0)
+                    {
+                        /* Process first element */
+                        if (sub_index < IAS_L0R_NUM_SAMPLES_PER_IMU_RECORD - 1)
+                            last_angle =
+                                &(l0r_imu[index].gyro_samples[sub_index + 1]);
+                        else if (index < l0r_imu_count - 1)
+                            last_angle = &(l0r_imu[index + 1].gyro_samples[0]);
+                        else
+                        {
+                            IAS_LOG_ERROR("Reached last element");
+                            return ERROR;
+                        }
+
+                        /* Check that the angular rates and saturation/scaling
+                           are valid */
+                        if (last_angle->angular_rate_valid == ANGULAR_RATE_VALID
+                            && last_angle->saturation_and_scaling
+                                == SATURATION_AND_SCALING_VALID)
+                        {
+                            /* Store the difference between the last and
+                               current angles */
+                            for (loop_index = 0; 
+                                 loop_index < IAS_L0R_NUM_GYROS; 
+                                 loop_index++)
+                            {
+                                gyro_samples[loop_index] =
+                                   last_angle->integrated_angle_count
+                                       [loop_index]
+                                   - curr_angle->integrated_angle_count
+                                       [loop_index];
+                            }
+                        }
+                        else
+                        {
+                            for (loop_index = 0; 
+                                 loop_index < IAS_L0R_NUM_GYROS;  
+                                 loop_index++)
+                            {
+                                gyro_samples[loop_index] = 0.0;
+                            }
+                            valid_imu_flag[imu_total] = 0;
+                        }
+
+                        gyro_delta = 1.0;
+                    }
+                    else
+                    {
+                        /* Process the rest of elements */
+                        for (loop_index = 0; 
+                             loop_index < IAS_L0R_NUM_GYROS; 
+                             loop_index++)
+                        {
+                            /* Store difference of current and previous 
+                               angles */
+                            gyro_samples[loop_index] =
+                                curr_angle->integrated_angle_count[loop_index] -
+                                last_angle->integrated_angle_count[loop_index];
+                        }
+
+                        /* index offset between adjacent valid gyro samples */
+                        gyro_delta = (double)(imu_curr - imu_last);
+                    }
+
+                    /* check for IMU resets */
+                    for (loop_index = 0; 
+                         loop_index < IAS_L0R_NUM_GYROS; 
+                         loop_index++)
+                    {
+                        gyro_delta_counts[loop_index] 
+                            = (int)floor(gyro_samples[loop_index] + 0.5);
+
+                        if (gyro_delta_counts[loop_index] > IMU_MAX / 2)
+                            gyro_delta_counts[loop_index] -= IMU_MAX;
+                        if (gyro_delta_counts[loop_index] < -IMU_MAX / 2)
+                            gyro_delta_counts[loop_index] += IMU_MAX;
+
+                        /* this assumes that the IMU data are in counts and
+                           converts them to radians */
+                        gyro_samples[loop_index] = gyro_delta_counts[loop_index]
+                                           * ancillary_eng->gyro_conv_angle
+                                           * a2r / gyro_delta;
+
+                        /* Clear the valid flag for the data if it exceeds the
+                           threshold */
+                        if (fabs(gyro_samples[loop_index]) 
+                            > iru_threshold_radians[loop_index])
+                        {
+                            valid_imu_flag[imu_total] = 0;
+                        }
+                    }
+
+                    /* convert the 4 axes to 3 */
+                    if (ias_math_multiply_matrix(&roll_pitch_yaw_matrix[0][0], 
+                        gyro_samples, attitude, 3, 4, 4, 1) != SUCCESS)
+                    {
+                        IAS_LOG_ERROR("Finding RPY from IMU");
+                        return ERROR;
+                    }
+                    /* Store the resulting roll-pitch-yaw values */
+                    imu_data[imu_total].x = attitude[0];
+                    imu_data[imu_total].y = attitude[1];
+                    imu_data[imu_total].z = attitude[2];
+
+                    /* Get ready to move to the next point */
+                    imu_last = imu_curr;
+                    last_angle = curr_angle;
+
+#if DEBUG_GENERATE_DATA_FILES == 1 
+                    fprintf(fp, "%d %f %d %d %d %d %e %e %e %e %e %e %e\n",
+                                index, imu_time_data[imu_total],
+                                curr_angle->integrated_angle_count[0],
+                                curr_angle->integrated_angle_count[1],
+                                curr_angle->integrated_angle_count[2],
+                                curr_angle->integrated_angle_count[3],
+                                gyro_samples[0], gyro_samples[1], 
+                                gyro_samples[2], gyro_samples[3],
+                                imu_data[imu_total].x,
+                                imu_data[imu_total].y,
+                                imu_data[imu_total].z);
+#endif
+
+                }
+                else
+                {
+                    valid_imu_flag[imu_total] = 0;
+                    if ( imu_total > 0 )
+                    {
+                        imu_data[imu_total].x = imu_data[imu_total - 1].x;
+                        imu_data[imu_total].y = imu_data[imu_total - 1].y;
+                        imu_data[imu_total].z = imu_data[imu_total - 1].z;
+                    }
+                    else
+                    {
+                        imu_data[imu_total].x = 0.0;
+                        imu_data[imu_total].y = 0.0;
+                        imu_data[imu_total].z = 0.0;
+                    }
+                }
+                imu_total++;
+            }
+        }
+
+#if DEBUG_GENERATE_DATA_FILES == 1 
+        fclose(fp);
+#endif
+
+       IAS_LOG_INFO("Bounds on IMU time %f, %f",
+           imu_time_data[0], imu_time_data[imu_total - 1]);
+
+#if DEBUG_GENERATE_DATA_FILES == 1 
+        fp = fopen("anc.imu.int.dat","w");
+
+        dr = dp = dy = 0.0;
+        for (index = 0; index < imu_total; index++)
+        {
+            dr += imu_data[index].x;
+            dp += imu_data[index].y;
+            dy += imu_data[index].z;
+
+            fprintf(fp, "%d %f %e %e %e\n", index, imu_time_data[index], 
+                         dr, dp, dy);
+        }
+
+        fclose(fp);
+#endif
+
+        /* As a quality check, issue a warning if there are 50 or more
+           consecutive invalid IMU data points */
+        consecutive_invalid_count = 0;
+        max_consecutive_invalid_count = 0;
+        for (index = 0; index < imu_total; index++)
+        {
+            if (!valid_imu_flag[index])
+            {
+                consecutive_invalid_count++;
+                if (consecutive_invalid_count >= max_consecutive_invalid_count)
+                {
+                    max_consecutive_invalid_count = consecutive_invalid_count;
+                }
+            }
+            else
+                consecutive_invalid_count = 0;
+        }
+        if (max_consecutive_invalid_count >= 50)
+        {
+            IAS_LOG_WARNING("Found %d consecutive invalid IMU gyro samples",
+                    max_consecutive_invalid_count);
+        }
+
+        /* rotate IMU from its native axis to the ACS axis */
+        if (convert_imu_to_acs(cpf, imu_total, imu_data)
+            != SUCCESS)
+        {
+            IAS_LOG_ERROR("Converting IMU to ACS coordinates");
+            return ERROR;
+        }
+
+#if DEBUG_GENERATE_DATA_FILES == 1 
+        fp = fopen("anc.imu.acs.dat", "w");
+
+        for (index = 0; index < imu_total; index++)
+        {
+            fprintf(fp, "%d %f %e %e %e\n",
+                        index, imu_time_data[index],
+                        imu_data[index].x, imu_data[index].y, 
+                        imu_data[index].z);
+        }
+
+        fclose(fp);
+#endif
+    }
+
+    *imu_count = imu_total;
+
+    return SUCCESS;
+}
+
+
+/****************************************************************************
+NAME: convert_imu_to_acs
+
+PURPOSE: Rotate the IMU data to the attitude control system coordinates.
+
+RETURN VALUE:
+Type = int
+Value    Description
+-----    -----------
+SUCCESS  Successful completion 
+ERROR    Operation failed
+
+*****************************************************************************/
+static int convert_imu_to_acs
+(
+    IAS_CPF *cpf,    /* I: info from CPF */ 
+    int nimu,        /* I: number of IMU points */
+    IAS_VECTOR *imu  /* I/O: IMU data */
+)
+{
+    int i;                   /* looping variable */
+    int j;                   /* looping variable */
+    int status;              /* status of return from function */
+    double matrix1[3][3];    /* temporary matricies */       
+    double newmatrix[3][3];
+    double att_to_imu[3][3]; /* the attitude to IMU conversion matrix */
+    double roll[3][3];       /* the original roll, pitch and yaw components of
+                                the IMU matrix */
+    double pitch[3][3];       
+    double yaw[3][3];
+    double imu_to_acs_align[3][3]; /* holds a copy of the cpf values */
+
+    const struct IAS_CPF_ATTITUDE_PARAMETERS *attitude_parameters; 
+                                   /* CPF structure */
+
+    /* grab the cpf values */
+    attitude_parameters = ias_cpf_get_attitude_params(cpf);
+    if (attitude_parameters == NULL)
+    {
+        IAS_LOG_ERROR("Reading attitude parameters from the CPF");
+        return ERROR;
+    }
+
+    /* copy the values from the cpf structure because of the const on the
+       cpf structure */
+    for (i = 0; i < 3; i++)
+    {
+        for (j = 0; j < 3; j++)
+        {
+            imu_to_acs_align[i][j] =
+                attitude_parameters->iru_to_acs_align_matrix[i][j];
+        }
+    }
+
+    /* calculate the inverse of the IMU to attitude matrix from the CPF */
+    status = ias_math_invert_3x3_matrix(imu_to_acs_align, att_to_imu);
+    if (status != SUCCESS)
+    {
+        IAS_LOG_ERROR("Inverting matrix");
+        return ERROR;
+    }
+
+    /* Initialize the roll matrix */
+    roll[0][0] = 1.0;
+    roll[0][1] = 0.0;
+    roll[0][2] = 0.0;
+    roll[1][0] = 0.0;
+    roll[2][0] = 0.0;
+
+    /* Initialize the pitch matirix */
+    pitch[0][1] = 0.0;
+    pitch[1][0] = 0.0;
+    pitch[1][1] = 1.0;
+    pitch[1][2] = 0.0;
+    pitch[2][1] = 0.0;
+
+    /* Initialize the yaw matrix */
+    yaw[0][2] = 0.0;
+    yaw[1][2] = 0.0;
+    yaw[2][0] = 0.0;
+    yaw[2][1] = 0.0;
+    yaw[2][2] = 1.0;
+
+    for (i = 0; i < nimu; i++)
+    {
+        /* Initialize the roll matrix */
+        roll[1][1] = cos(imu[i].x);
+        roll[1][2] = sin(imu[i].x);
+        roll[2][1] = -roll[1][2];
+        roll[2][2] = roll[1][1];
+     
+        /* Initialize the pitch matirix */
+        pitch[0][0] = cos(imu[i].y);
+        pitch[0][2] = -sin(imu[i].y);
+        pitch[2][0] = -pitch[0][2];
+        pitch[2][2] = pitch[0][0];
+    
+        /* Initialize the yaw matrix */
+        yaw[0][0] = cos(imu[i].z);
+        yaw[0][1] = sin(imu[i].z);
+        yaw[1][0] = -yaw[0][1];
+        yaw[1][1] = yaw[0][0];
+ 
+        ias_math_multiply_3x3_matrix(roll, att_to_imu, newmatrix);
+        ias_math_multiply_3x3_matrix(pitch, newmatrix, matrix1);
+        ias_math_multiply_3x3_matrix(yaw, matrix1, newmatrix);
+        ias_math_multiply_3x3_matrix(imu_to_acs_align, newmatrix, matrix1);
+    
+        imu[i].x = -atan2(matrix1[2][1], matrix1[2][2]); /* roll coord */
+        imu[i].y = asin(matrix1[2][0]);                  /* pitch coord */
+        imu[i].z = -atan2(matrix1[1][0], matrix1[0][0]); /* yaw coord */
+    }
+
+    return SUCCESS;
+}
+
+/*****************************************************************************
+Name: generate_imu_to_rpy_matrix
+
+Purpose: Calculate the IMU to RPY matrix
+
+Returns: Integer status code
+         SUCCESS:  Successful completion 
+         ERROR:    Operation failed
+*****************************************************************************/
+static int generate_imu_to_rpy_matrix
+(
+    IAS_CPF *cpf,    /* I: CPF structure */ 
+    double *rpy      /* O: RPY matrix */
+)
+{
+    int index; /* loop variable */
+    /* all IAS math matrix routines require passing a "double *" 
+       so create the 3x4 and 4x3 arrays as size 12 and the 3x3 as size 9 */
+    double imu_matrix[12]; /* IMU vector matrix [3][4] */
+    double imu_matrix_t[12]; /* transposed IMU vector matrix [4][3] */
+    double matrix[9]; /* to hold the multipled result */
+    double inverse_matrix[9]; /* to hold the inverted result */
+    int sm_row = 0; /* reduce some math by calculating the row offset once */
+
+    const struct IAS_CPF_ATTITUDE_PARAMETERS *attitude_parameters; 
+                                                        /* CPF structure */
+
+    /* grab the cpf values */
+    attitude_parameters = ias_cpf_get_attitude_params(cpf);
+    if (attitude_parameters == NULL)
+    {
+        IAS_LOG_ERROR("Reading attitude parameters from the CPF");
+        return ERROR;
+    }
+
+    /* build both the IMU matrix and the transposed version at the same time */
+    for (index = 0; index < 3; index++)
+    {
+        sm_row = index * 4; /* only calculate the row of the imu_matrix once */
+
+        imu_matrix[sm_row] = attitude_parameters->siru_axis_a[index];
+        imu_matrix[sm_row + 1] = attitude_parameters->siru_axis_b[index];
+        imu_matrix[sm_row + 2] = attitude_parameters->siru_axis_c[index];
+        imu_matrix[sm_row + 3] = attitude_parameters->siru_axis_d[index];
+    }
+
+    ias_math_transpose_matrix(imu_matrix, imu_matrix_t, 3, 4);
+
+    if (ias_math_multiply_matrix(imu_matrix, imu_matrix_t, 
+        matrix, 3, 4, 4, 3) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating IMU * IMU_T");
+        return ERROR;
+    }
+
+    if (ias_math_invert_matrix(matrix, inverse_matrix, 3) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating inverse IMU");
+        return ERROR;
+    }
+
+    if (ias_math_multiply_matrix(inverse_matrix, imu_matrix, rpy,
+                                 3, 3, 3, 4) != SUCCESS)
+    {
+        IAS_LOG_ERROR("Calculating IMU->RPY matrix");
+        return ERROR;
+    }
+
+    return SUCCESS;
+}
+
+
+/*****************************************************************************
+Name: ias_ancillary_process_imu_times
+
+Purpose: Process the IMU time data -- check the L0R IMU synchronization data, 
+         correcting the data if a re-sync occurred.
+
+Returns: Integer status code
+         SUCCESS:  Successful completion 
+         ERROR:    Operation failed
+*****************************************************************************/
+int ias_ancillary_process_imu_times(
+    const IAS_L0R_IMU *l0r_imu, /* I: Ancillary IMU records */
+    double imu_offset_scale,    /* I: CPF IMU clock scale factor, in seconds
+                                      per IMU offset count */
+    int imu_count,              /* I: Number of records */
+    int *imu_valid,             /* O: Flag to indicate whether valid IMU data
+                                      was found (mainly the sync event was
+                                      present).  1 = valid, 0 = invalid */
+    double *imu_time            /* O: IMU sample times (SC epoch) */
+)
+{
+    int first_valid = -1;   /* Index of first valid time synch */
+    int field;              /* Loop index */
+    double curr_time;       /* Time of current sample (SC epoch) */
+    int imu_curr;           /* Running count of IMU samples */
+    int imu_offset;         /* IMU clock cycles since last sync */
+    double base_time = 0.0; /* Time of last synch (SC epoch) */
+    double sync_time = 0.0; /* Sync time delay */
+    int base_clock;         /* Value of last valid sample clock */
+    int base_sync = 0;      /* Value of last valid synch */
+    int last_offset = 0;    /* Previous value of imu_offset */
+    int excess_offset = 0;  /* Part of IMU clock offset that exceeds 16 bits */
+    int *imu_clock_samples; /* Temporary array to hold SIRU clock samples */
+    const IAS_L0R_IMU_SAMPLE *curr_angle;
+
+    /* Assume the data will be invalid */
+    *imu_valid = 0;
+
+    /* Allocate temporary array to hold the SIRU clock samples */
+    imu_clock_samples = (int *)malloc(sizeof(int) * imu_count 
+                        * IAS_L0R_NUM_SAMPLES_PER_IMU_RECORD);
+    if (imu_clock_samples == NULL)
+    {
+        IAS_LOG_ERROR("Allocating SIRU clock buffer");
+        return ERROR;
+    }
+
+    /* Loop through L0R IMU data checking time synchronization data */
+    for (field = 0, imu_curr = 0; field < imu_count; field++)
+    {
+        /* Note that all of the L0R times are the same for a given 1 Hz
+           ancillary data record */
+
+        int subfield; /* Loop index */
+        /* convert the time to seconds since J2000 */
+        curr_time = IAS_L0R_CONVERT_TIME_TO_SECONDS_SINCE_J2000(
+            l0r_imu[field].l0r_time);
+        for (subfield = 0; subfield < IAS_L0R_NUM_SAMPLES_PER_IMU_RECORD;
+             subfield++, imu_curr++)
+        {
+            curr_angle = &(l0r_imu[field].gyro_samples[subfield]);
+            imu_clock_samples[imu_curr] = curr_angle->time_tag;
+
+            /* If the sync event time tag is not fill, this is a valid re-sync*/
+            if (curr_angle->sync_event_time_tag != IMU_FILL)
+            {
+                base_clock = curr_angle->time_tag;
+                base_sync = base_clock;
+                sync_time = (double)curr_angle->sync_event_time_tag
+                          / (double)IMU_SYNC_RATIO * imu_offset_scale;
+                base_time = curr_time + sync_time;
+                imu_offset = 0;
+                excess_offset = 0;
+                last_offset = imu_offset;
+                imu_time[imu_curr] = base_time + imu_offset 
+                    * imu_offset_scale; 
+
+                /* Fix previous data if this is the first valid point */
+                if (first_valid < 0)
+                {
+                    int i; /* loop index */
+                    first_valid = imu_curr;
+
+                    /* Need to set the times for the previous samples since 
+                       clock has been reset and actual sync time is unknown */
+                    for (i = imu_curr; i > 0; i--)
+                    {
+                        /* Could make this more complicated and try to recover 
+                           previous sync from pre-reset clock values, but 
+                           probably not worth doing. */
+                        imu_offset = (imu_clock_samples[i]
+                                      - imu_clock_samples[i - 1] + IMU_MAX)
+                                     % IMU_MAX;
+                        imu_time[i - 1] = imu_time[i] - imu_offset
+                                          * imu_offset_scale;
+                    }
+
+                    imu_offset = 0;
+                }
+
+                /* Make sure new time code is consistent */
+                if (imu_curr > 0
+                    && fabs(imu_time[imu_curr] - imu_time[imu_curr - 1]
+                            - IAS_ANCILLARY_IMU_TIME) > IAS_ANCILLARY_IMU_TIME)
+                {
+                    IAS_LOG_WARNING("New SIRU synch time %lf not consistent"
+                                    " with previous value %lf - resetting.",
+                                    imu_time[imu_curr], imu_time[imu_curr - 1]);
+                    imu_time[imu_curr] = imu_time[imu_curr - 1]
+                                         + IAS_ANCILLARY_IMU_TIME;
+                    base_time = imu_time[imu_curr] - imu_offset
+                                * imu_offset_scale;
+                }
+
+            }
+            else /* sync time is fill */
+            {
+                if (first_valid < 0)
+                {
+                    /* These times are filled in once we have a valid sync */
+                    continue;   
+                }
+                else
+                {
+                    /* Check for a IMU sync that was not sampled by the 50 Hz 
+                       clock */
+                    if (curr_time > (base_time + IAS_ANCILLARY_IMU_TIME)
+                        && curr_time < (imu_time[imu_curr - 1] 
+                            + IAS_ANCILLARY_IMU_TIME))
+                    {
+                        sync_time = imu_time[imu_curr - 1] 
+                            + IAS_ANCILLARY_IMU_TIME - curr_time;
+                        base_time = curr_time + sync_time;
+                        base_sync = curr_angle->time_tag;
+                        base_clock = curr_angle->time_tag;
+                        imu_offset = 0;
+                        excess_offset = 0;
+                    }
+                    else  /* Still in the valid post-sync period */
+                    {
+                        imu_offset = (curr_angle->time_tag - base_sync 
+                            + IMU_MAX) % IMU_MAX;
+                        imu_offset += excess_offset;
+                        /* Check for 16-bit rollover */
+                        if (imu_offset < last_offset)
+                        {
+                            excess_offset += IMU_MAX;
+                            imu_offset += IMU_MAX;
+                        }
+                    }
+                    imu_time[imu_curr] = base_time + imu_offset 
+                        * imu_offset_scale;
+                    last_offset = imu_offset;
+                }
+            }
+        }
+    }
+    
+    /* Make sure we found some valid data. */
+    if (first_valid < 0)
+    {
+        IAS_LOG_WARNING("No valid IMU time syncs found");
+        free(imu_clock_samples);
+        return SUCCESS;
+    }
+
+    /* Made it here, so the IMU data is valid */
+    *imu_valid = 1;
+
+    free(imu_clock_samples);
+    return SUCCESS;
+}
+
